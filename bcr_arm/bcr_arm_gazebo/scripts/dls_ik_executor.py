@@ -6,31 +6,54 @@ from typing import Optional
 import numpy as np
 import rclpy
 from builtin_interfaces.msg import Duration
-from geometry_msgs.msg import PointStamped
+from geometry_msgs.msg import PointStamped, PoseStamped
 from rclpy.node import Node
 from sensor_msgs.msg import JointState
 from trajectory_msgs.msg import JointTrajectory, JointTrajectoryPoint
 
 
 class DlsIkExecutor(Node):
-    """Solve position-only IK with damped least squares and publish joint trajectories."""
+    """Solve Cartesian IK targets for the BCR arm and publish joint trajectories."""
 
-    def __init__(self, oneshot_point: Optional[PointStamped] = None):
+    def __init__(
+        self,
+        oneshot_point: Optional[PointStamped] = None,
+        oneshot_pose: Optional[PoseStamped] = None,
+    ):
         super().__init__("dls_ik_executor")
 
         self.declare_parameter("world_frame", "world")
         self.declare_parameter("target_topic", "/cartesian_target")
+        self.declare_parameter("target_pose_topic", "/cartesian_target_pose")
         self.declare_parameter("joint_state_topic", "/joint_states")
         self.declare_parameter(
             "command_topic", "/joint_trajectory_controller/joint_trajectory"
         )
         self.declare_parameter("goal_time_sec", 3.0)
-        self.declare_parameter("position_tolerance", 0.01)
-        self.declare_parameter("damping_lambda", 0.1)
-        self.declare_parameter("max_iterations", 150)
-        self.declare_parameter("step_scale", 0.6)
-        self.declare_parameter("max_joint_step", 0.15)
+        self.declare_parameter("position_tolerance", 0.005)
+        self.declare_parameter("orientation_tolerance", 0.06)
+        self.declare_parameter("damping_lambda", 0.08)
+        self.declare_parameter("step_scale", 1.15)
+        self.declare_parameter("max_joint_step", 0.18)
+        self.declare_parameter("max_joint_velocity", 3.0)
         self.declare_parameter("deadband", 0.005)
+        self.declare_parameter("servo_rate_hz", 25.0)
+        self.declare_parameter("position_weight", 3.0)
+        self.declare_parameter("orientation_weight", 0.9)
+        self.declare_parameter("orientation_mode", "exact")
+        self.declare_parameter("point_target_orientation_policy", "current")
+        self.declare_parameter("prealign_orientation_first", False)
+        self.declare_parameter("prealign_orientation_tolerance", 0.20)
+        self.declare_parameter("neutral_qx", 0.0)
+        self.declare_parameter("neutral_qy", -0.70710678)
+        self.declare_parameter("neutral_qz", 0.0)
+        self.declare_parameter("neutral_qw", 0.70710678)
+        self.declare_parameter("tool_up_axis_x", 0.0)
+        self.declare_parameter("tool_up_axis_y", 0.0)
+        self.declare_parameter("tool_up_axis_z", 1.0)
+        self.declare_parameter("world_up_axis_x", 0.0)
+        self.declare_parameter("world_up_axis_y", 0.0)
+        self.declare_parameter("world_up_axis_z", 1.0)
         self.declare_parameter("l1_len", 0.200)
         self.declare_parameter("l2_offset", 0.065)
         self.declare_parameter("l3_len", 0.225)
@@ -38,18 +61,73 @@ class DlsIkExecutor(Node):
         self.declare_parameter("l5_len", 0.150)
         self.declare_parameter("l6_offset", 0.060)
         self.declare_parameter("l7_len", 0.125)
+        self.declare_parameter("grasp_offset_x", 0.0)
+        self.declare_parameter("grasp_offset_y", 0.0)
+        self.declare_parameter("grasp_offset_z", 0.143)
+        self.declare_parameter("solver_max_iterations", 120)
 
         self._world_frame = self.get_parameter("world_frame").value
         self._target_topic = self.get_parameter("target_topic").value
+        self._target_pose_topic = self.get_parameter("target_pose_topic").value
         self._joint_state_topic = self.get_parameter("joint_state_topic").value
         self._command_topic = self.get_parameter("command_topic").value
         self._goal_time_sec = float(self.get_parameter("goal_time_sec").value)
         self._position_tolerance = float(self.get_parameter("position_tolerance").value)
+        self._orientation_tolerance = float(
+            self.get_parameter("orientation_tolerance").value
+        )
         self._damping = float(self.get_parameter("damping_lambda").value)
-        self._max_iterations = int(self.get_parameter("max_iterations").value)
         self._step_scale = float(self.get_parameter("step_scale").value)
         self._max_joint_step = float(self.get_parameter("max_joint_step").value)
+        self._max_joint_velocity = float(self.get_parameter("max_joint_velocity").value)
         self._deadband = float(self.get_parameter("deadband").value)
+        self._servo_rate_hz = max(1.0, float(self.get_parameter("servo_rate_hz").value))
+        self._position_weight = float(self.get_parameter("position_weight").value)
+        self._orientation_weight = float(self.get_parameter("orientation_weight").value)
+        self._prealign_orientation_first = bool(
+            self.get_parameter("prealign_orientation_first").value
+        )
+        self._prealign_orientation_tolerance = float(
+            self.get_parameter("prealign_orientation_tolerance").value
+        )
+
+        point_target_orientation_policy = str(
+            self.get_parameter("point_target_orientation_policy").value
+        ).strip().lower()
+        if point_target_orientation_policy not in {"current", "neutral", "none"}:
+            self.get_logger().warning(
+                "Unknown point_target_orientation_policy '%s'. Falling back to 'current'."
+                % point_target_orientation_policy
+            )
+            point_target_orientation_policy = "current"
+        self._point_target_orientation_policy = point_target_orientation_policy
+
+        neutral_rotation = self._quaternion_to_rotation_matrix(
+            np.array(
+                [
+                    float(self.get_parameter("neutral_qx").value),
+                    float(self.get_parameter("neutral_qy").value),
+                    float(self.get_parameter("neutral_qz").value),
+                    float(self.get_parameter("neutral_qw").value),
+                ],
+                dtype=float,
+            )
+        )
+        if neutral_rotation is None:
+            self.get_logger().warning(
+                "Neutral quaternion is invalid. Falling back to identity rotation."
+            )
+            neutral_rotation = np.eye(3)
+        self._neutral_rotation = neutral_rotation
+
+        orientation_mode = str(self.get_parameter("orientation_mode").value).strip().lower()
+        if orientation_mode not in {"upright_free_yaw", "exact"}:
+            self.get_logger().warning(
+                "Unknown orientation_mode '%s'. Falling back to 'upright_free_yaw'."
+                % orientation_mode
+            )
+            orientation_mode = "upright_free_yaw"
+        self._orientation_mode = orientation_mode
 
         self._joint_names = [
             "joint1",
@@ -60,8 +138,12 @@ class DlsIkExecutor(Node):
             "joint6",
             "joint7",
         ]
-        self._joint_limits_lower = np.array([-6.28, -2.0, -6.28, -2.0, -6.28, -2.0, -6.28])
-        self._joint_limits_upper = np.array([6.28, 2.0, 6.28, 2.0, 6.28, 2.0, 6.28])
+        self._joint_limits_lower = np.array(
+            [-6.28, -2.0, -6.28, -2.0, -6.28, -2.0, -6.28], dtype=float
+        )
+        self._joint_limits_upper = np.array(
+            [6.28, 2.0, 6.28, 2.0, 6.28, 2.0, 6.28], dtype=float
+        )
 
         self._l1_len = float(self.get_parameter("l1_len").value)
         self._l2_offset = float(self.get_parameter("l2_offset").value)
@@ -70,6 +152,15 @@ class DlsIkExecutor(Node):
         self._l5_len = float(self.get_parameter("l5_len").value)
         self._l6_offset = float(self.get_parameter("l6_offset").value)
         self._l7_len = float(self.get_parameter("l7_len").value)
+        self._grasp_offset = np.array(
+            [
+                float(self.get_parameter("grasp_offset_x").value),
+                float(self.get_parameter("grasp_offset_y").value),
+                float(self.get_parameter("grasp_offset_z").value),
+            ],
+            dtype=float,
+        )
+        self._solver_max_iterations = max(1, int(self.get_parameter("solver_max_iterations").value))
 
         self._origins = [
             np.array([0.0, 0.0, 0.025]),
@@ -89,36 +180,58 @@ class DlsIkExecutor(Node):
             np.array([1.0, 0.0, 0.0]),
             np.array([0.0, 0.0, 1.0]),
         ]
-        self._tool_offset = np.array([0.0, 0.0, self._l7_len])
+        self._tool_offset = self._grasp_offset.copy()
+        self._tool_up_axis = self._normalized_vector(
+            np.array(
+                [
+                    float(self.get_parameter("tool_up_axis_x").value),
+                    float(self.get_parameter("tool_up_axis_y").value),
+                    float(self.get_parameter("tool_up_axis_z").value),
+                ],
+                dtype=float,
+            ),
+            np.array([0.0, 0.0, 1.0], dtype=float),
+        )
+        self._world_up_axis = self._normalized_vector(
+            np.array(
+                [
+                    float(self.get_parameter("world_up_axis_x").value),
+                    float(self.get_parameter("world_up_axis_y").value),
+                    float(self.get_parameter("world_up_axis_z").value),
+                ],
+                dtype=float,
+            ),
+            np.array([0.0, 0.0, 1.0], dtype=float),
+        )
 
         self._current_q: Optional[np.ndarray] = None
-        self._busy = False
+        self._target_position: Optional[np.ndarray] = None
+        self._target_rotation: Optional[np.ndarray] = None
+        self._target_kind: Optional[str] = None
+        self._pending_solve = False
 
         self._joint_state_sub = self.create_subscription(
             JointState, self._joint_state_topic, self._joint_state_callback, 10
         )
         self._trajectory_pub = self.create_publisher(JointTrajectory, self._command_topic, 10)
+        self._servo_timer = self.create_timer(1.0 / self._servo_rate_hz, self._servo_timer_callback)
 
-        self._oneshot = oneshot_point is not None
-        self._oneshot_timer = None
-        if oneshot_point is None:
+        self._oneshot = oneshot_point is not None or oneshot_pose is not None
+        if not self._oneshot:
             self._target_sub = self.create_subscription(
                 PointStamped, self._target_topic, self._target_callback, 10
             )
-            self.get_logger().info(
-                "Listening on %s and publishing trajectories to %s"
-                % (self._target_topic, self._command_topic)
+            self._target_pose_sub = self.create_subscription(
+                PoseStamped, self._target_pose_topic, self._target_pose_callback, 10
             )
-        else:
-            self._oneshot_target = oneshot_point
-            self._oneshot_timer = self.create_timer(0.25, self._oneshot_timer_callback)
-
-    def _oneshot_timer_callback(self) -> None:
-        if self._current_q is None or self._busy:
-            return
-        self.destroy_timer(self._oneshot_timer)
-        self._oneshot_timer = None
-        self._solve_and_publish(self._oneshot_target)
+            self.get_logger().info(
+                "Servoing on %s (PointStamped) and %s (PoseStamped); publishing to %s"
+                % (self._target_topic, self._target_pose_topic, self._command_topic)
+            )
+        elif oneshot_pose is not None:
+            self._set_pose_target(oneshot_pose, source="oneshot")
+        elif oneshot_point is not None:
+            self._set_point_target(oneshot_point, source="oneshot")
 
     def _joint_state_callback(self, msg: JointState) -> None:
         positions = dict(zip(msg.name, msg.position))
@@ -127,15 +240,12 @@ class DlsIkExecutor(Node):
         self._current_q = np.array([positions[j] for j in self._joint_names], dtype=float)
 
     def _target_callback(self, msg: PointStamped) -> None:
-        if self._busy:
-            self.get_logger().warning("Ignoring target while previous solve is in progress.")
-            return
-        if self._current_q is None:
-            self.get_logger().warning("No joint state received yet. Cannot solve IK.")
-            return
-        self._solve_and_publish(msg)
+        self._set_point_target(msg, source="topic")
 
-    def _solve_and_publish(self, target: PointStamped) -> None:
+    def _target_pose_callback(self, msg: PoseStamped) -> None:
+        self._set_pose_target(msg, source="topic")
+
+    def _set_point_target(self, target: PointStamped, source: str) -> None:
         frame = target.header.frame_id or self._world_frame
         if frame != self._world_frame:
             self.get_logger().error(
@@ -145,64 +255,203 @@ class DlsIkExecutor(Node):
                 rclpy.shutdown()
             return
 
-        target_xyz = np.array([target.point.x, target.point.y, target.point.z], dtype=float)
-        current_xyz, _ = self._forward_kinematics(self._current_q)
-        current_error = np.linalg.norm(target_xyz - current_xyz)
-        if current_error <= self._deadband:
-            self.get_logger().info(
-                "Target within deadband (%.4f m). Skipping motion." % current_error
-            )
-            if self._oneshot:
-                rclpy.shutdown()
-            return
+        self._target_position = np.array(
+            [target.point.x, target.point.y, target.point.z], dtype=float
+        )
+        self._target_rotation = self._point_target_rotation_from_policy()
+        self._target_kind = "point"
+        self._pending_solve = True
 
-        self._busy = True
         self.get_logger().info(
-            "Solving DLS IK for x=%.3f y=%.3f z=%.3f" % tuple(target_xyz.tolist())
+            "Accepted %s point target x=%.3f y=%.3f z=%.3f (orientation policy=%s)"
+            % (
+                source,
+                self._target_position[0],
+                self._target_position[1],
+                self._target_position[2],
+                self._point_target_orientation_policy,
+            )
         )
 
-        success, solution_q, final_error, iterations = self._solve_dls(target_xyz)
-        if not success:
+    def _set_pose_target(self, target: PoseStamped, source: str) -> None:
+        frame = target.header.frame_id or self._world_frame
+        if frame != self._world_frame:
             self.get_logger().error(
-                "DLS IK failed after %d iterations. Final position error: %.4f m"
-                % (iterations, final_error)
+                "Target frame '%s' is not supported. Expected '%s'." % (frame, self._world_frame)
             )
-            self._busy = False
             if self._oneshot:
                 rclpy.shutdown()
             return
 
-        self._publish_trajectory(solution_q)
-        self._current_q = solution_q
-        self.get_logger().info(
-            "Published joint target after %d iterations. Final error: %.4f m"
-            % (iterations, final_error)
+        rotation = self._quaternion_to_rotation_matrix(
+            np.array(
+                [
+                    target.pose.orientation.x,
+                    target.pose.orientation.y,
+                    target.pose.orientation.z,
+                    target.pose.orientation.w,
+                ],
+                dtype=float,
+            )
         )
-        self._busy = False
-        if self._oneshot:
-            rclpy.shutdown()
+        if rotation is None:
+            self.get_logger().error("Received invalid quaternion in pose target.")
+            if self._oneshot:
+                rclpy.shutdown()
+            return
 
-    def _solve_dls(self, target_xyz: np.ndarray):
-        q = np.array(self._current_q, dtype=float)
+        self._target_position = np.array(
+            [target.pose.position.x, target.pose.position.y, target.pose.position.z], dtype=float
+        )
+        self._target_rotation = rotation
+        self._target_kind = "pose"
+        self._pending_solve = True
+        self.get_logger().info(
+            "Accepted %s pose target x=%.3f y=%.3f z=%.3f"
+            % (source, self._target_position[0], self._target_position[1], self._target_position[2])
+        )
 
-        for iteration in range(1, self._max_iterations + 1):
-            current_xyz, jacobian = self._forward_kinematics(q, with_jacobian=True)
-            error = target_xyz - current_xyz
-            error_norm = float(np.linalg.norm(error))
-            if error_norm <= self._position_tolerance:
-                return True, q, error_norm, iteration
+    def _servo_timer_callback(self) -> None:
+        if self._current_q is None or self._target_position is None:
+            return
 
-            jj_t = jacobian @ jacobian.T
-            damping_matrix = (self._damping ** 2) * np.eye(3)
-            dq = jacobian.T @ np.linalg.solve(jj_t + damping_matrix, error)
-            dq *= self._step_scale
-            dq = np.clip(dq, -self._max_joint_step, self._max_joint_step)
+        if not self._pending_solve:
+            if self._oneshot:
+                current_xyz, current_rotation, _ = self._forward_kinematics(self._current_q)
+                position_error, orientation_error = self._compute_task_errors(
+                    current_xyz, current_rotation
+                )
+                if (
+                    float(np.linalg.norm(position_error)) <= self._position_tolerance
+                    and float(np.linalg.norm(orientation_error)) <= self._orientation_tolerance
+                ):
+                    rclpy.shutdown()
+            return
 
-            q = np.clip(q + dq, self._joint_limits_lower, self._joint_limits_upper)
+        if self._target_rotation is None and self._target_kind == "point":
+            _, current_rotation, _ = self._forward_kinematics(self._current_q)
+            self._target_rotation = self._point_target_rotation_from_policy(current_rotation)
 
-        final_xyz, _ = self._forward_kinematics(q)
-        final_error = float(np.linalg.norm(target_xyz - final_xyz))
-        return False, q, final_error, self._max_iterations
+        solution = self._solve_target_configuration(self._current_q.copy())
+        self._pending_solve = False
+        if solution is None:
+            self.get_logger().warning("IK solve did not converge for the requested target.")
+            if self._oneshot:
+                rclpy.shutdown()
+            return
+
+        q_command, position_error_norm, orientation_error_norm = solution
+        self._publish_trajectory(q_command, self._goal_time_sec)
+        self.get_logger().info(
+            "Published solved joint target. Expected final position error: %.4f m, orientation error: %.4f rad"
+            % (position_error_norm, orientation_error_norm)
+        )
+
+    def _compute_task_errors(
+        self, current_xyz: np.ndarray, current_rotation: np.ndarray
+    ) -> tuple[np.ndarray, np.ndarray]:
+        position_error = self._target_position - current_xyz
+
+        if self._target_rotation is None and self._target_kind == "point":
+            self._target_rotation = self._point_target_rotation_from_policy(current_rotation)
+
+        if self._target_rotation is not None:
+            if (
+                self._target_kind == "point"
+                and self._point_target_orientation_policy == "neutral"
+            ):
+                orientation_error = self._axis_alignment_error(
+                    current_rotation,
+                    self._tool_up_axis,
+                    self._target_rotation @ self._tool_up_axis,
+                )
+            else:
+                orientation_error = self._rotation_error(current_rotation, self._target_rotation)
+        elif self._orientation_mode == "exact":
+            self._target_rotation = current_rotation.copy()
+            orientation_error = np.zeros(3, dtype=float)
+        else:
+            orientation_error = self._upright_orientation_error(current_rotation)
+
+        if (
+            self._prealign_orientation_first
+            and self._target_kind == "point"
+            and self._target_rotation is not None
+            and float(np.linalg.norm(orientation_error)) > self._prealign_orientation_tolerance
+        ):
+            position_error = np.zeros(3, dtype=float)
+
+        return position_error, orientation_error
+
+    def _solve_dq(
+        self, jacobian: np.ndarray, position_error: np.ndarray, orientation_error: np.ndarray
+    ) -> np.ndarray:
+        weighted_jacobian = np.vstack(
+            [
+                self._position_weight * jacobian[:3, :],
+                self._orientation_weight * jacobian[3:, :],
+            ]
+        )
+        weighted_error = np.concatenate(
+            [
+                self._position_weight * position_error,
+                self._orientation_weight * orientation_error,
+            ]
+        )
+
+        jj_t = weighted_jacobian @ weighted_jacobian.T
+        damping_matrix = (self._damping ** 2) * np.eye(weighted_jacobian.shape[0])
+        dq = weighted_jacobian.T @ np.linalg.solve(jj_t + damping_matrix, weighted_error)
+        dq *= self._step_scale
+
+        velocity_limited_step = self._max_joint_velocity / self._servo_rate_hz
+        dq = np.clip(dq, -velocity_limited_step, velocity_limited_step)
+        dq = np.clip(dq, -self._max_joint_step, self._max_joint_step)
+        return dq
+
+    def _solve_target_configuration(
+        self, q_seed: np.ndarray
+    ) -> Optional[tuple[np.ndarray, float, float]]:
+        q_trial = q_seed.copy()
+        best_q = q_trial.copy()
+        best_cost = float("inf")
+        best_position_error_norm = float("inf")
+        best_orientation_error_norm = float("inf")
+
+        for _ in range(self._solver_max_iterations):
+            current_xyz, current_rotation, jacobian = self._forward_kinematics(
+                q_trial, with_jacobian=True
+            )
+            position_error, orientation_error = self._compute_task_errors(current_xyz, current_rotation)
+            position_error_norm = float(np.linalg.norm(position_error))
+            orientation_error_norm = float(np.linalg.norm(orientation_error))
+            cost = (self._position_weight * position_error_norm) + (
+                self._orientation_weight * orientation_error_norm
+            )
+
+            if cost < best_cost:
+                best_cost = cost
+                best_q = q_trial.copy()
+                best_position_error_norm = position_error_norm
+                best_orientation_error_norm = orientation_error_norm
+
+            if (
+                position_error_norm <= self._position_tolerance
+                and orientation_error_norm <= self._orientation_tolerance
+            ):
+                return q_trial.copy(), position_error_norm, orientation_error_norm
+
+            dq = self._solve_dq(jacobian, position_error, orientation_error)
+            if np.linalg.norm(dq) < 1e-8:
+                break
+
+            q_trial = np.clip(
+                q_trial + dq, self._joint_limits_lower, self._joint_limits_upper
+            )
+
+        if np.isfinite(best_cost):
+            return best_q, best_position_error_norm, best_orientation_error_norm
+        return None
 
     def _forward_kinematics(self, q: np.ndarray, with_jacobian: bool = False):
         transform = np.eye(4)
@@ -217,28 +466,66 @@ class DlsIkExecutor(Node):
 
         transform = transform @ self._translation(self._tool_offset)
         end_effector_xyz = transform[:3, 3].copy()
+        end_effector_rotation = transform[:3, :3].copy()
 
         if not with_jacobian:
-            return end_effector_xyz, None
+            return end_effector_xyz, end_effector_rotation, None
 
-        jacobian = np.zeros((3, len(self._joint_names)))
+        jacobian = np.zeros((6, len(self._joint_names)))
         for index, (joint_origin, axis_world) in enumerate(zip(joint_positions, joint_axes_world)):
-            jacobian[:, index] = np.cross(axis_world, end_effector_xyz - joint_origin)
+            jacobian[:3, index] = np.cross(axis_world, end_effector_xyz - joint_origin)
+            jacobian[3:, index] = axis_world
 
-        return end_effector_xyz, jacobian
+        return end_effector_xyz, end_effector_rotation, jacobian
 
-    def _publish_trajectory(self, joint_positions: np.ndarray) -> None:
+    def _upright_orientation_error(self, current_rotation: np.ndarray) -> np.ndarray:
+        current_up = current_rotation @ self._tool_up_axis
+        return np.cross(current_up, self._world_up_axis)
+
+    @staticmethod
+    def _axis_alignment_error(
+        current_rotation: np.ndarray,
+        tool_axis: np.ndarray,
+        target_axis_world: np.ndarray,
+    ) -> np.ndarray:
+        current_axis_world = current_rotation @ tool_axis
+        current_axis_world = current_axis_world / np.linalg.norm(current_axis_world)
+        target_axis_world = target_axis_world / np.linalg.norm(target_axis_world)
+        return np.cross(current_axis_world, target_axis_world)
+
+    def _point_target_rotation_from_policy(
+        self, current_rotation: Optional[np.ndarray] = None
+    ) -> Optional[np.ndarray]:
+        if self._point_target_orientation_policy == "none":
+            return None
+        if self._point_target_orientation_policy == "neutral":
+            return self._neutral_rotation.copy()
+        if current_rotation is not None:
+            return current_rotation.copy()
+        if self._current_q is not None:
+            _, current_rotation, _ = self._forward_kinematics(self._current_q)
+            return current_rotation.copy()
+        return None
+
+    @staticmethod
+    def _rotation_error(current_rotation: np.ndarray, target_rotation: np.ndarray) -> np.ndarray:
+        return 0.5 * (
+            np.cross(current_rotation[:, 0], target_rotation[:, 0])
+            + np.cross(current_rotation[:, 1], target_rotation[:, 1])
+            + np.cross(current_rotation[:, 2], target_rotation[:, 2])
+        )
+
+    def _publish_trajectory(self, joint_positions: np.ndarray, time_from_start_sec: float) -> None:
         msg = JointTrajectory()
         msg.joint_names = self._joint_names
 
         point = JointTrajectoryPoint()
         point.positions = joint_positions.tolist()
         point.time_from_start = Duration(
-            sec=int(self._goal_time_sec),
-            nanosec=int((self._goal_time_sec % 1.0) * 1e9),
+            sec=int(time_from_start_sec),
+            nanosec=int((time_from_start_sec % 1.0) * 1e9),
         )
         msg.points = [point]
-
         self._trajectory_pub.publish(msg)
 
     @staticmethod
@@ -255,7 +542,7 @@ class DlsIkExecutor(Node):
         sin_theta = np.sin(angle)
         one_minus_cos = 1.0 - cos_theta
 
-        rotation = np.array(
+        return np.array(
             [
                 [
                     cos_theta + x_axis * x_axis * one_minus_cos,
@@ -276,13 +563,49 @@ class DlsIkExecutor(Node):
                     0.0,
                 ],
                 [0.0, 0.0, 0.0, 1.0],
-            ]
+            ],
+            dtype=float,
         )
-        return rotation
+
+    @staticmethod
+    def _normalized_vector(vector: np.ndarray, fallback: np.ndarray) -> np.ndarray:
+        norm = float(np.linalg.norm(vector))
+        if norm <= 1e-9:
+            return fallback.copy()
+        return vector / norm
+
+    @staticmethod
+    def _quaternion_to_rotation_matrix(quaternion: np.ndarray) -> Optional[np.ndarray]:
+        norm = float(np.linalg.norm(quaternion))
+        if norm <= 1e-9:
+            return None
+        x_axis, y_axis, z_axis, w_axis = quaternion / norm
+        return np.array(
+            [
+                [
+                    1.0 - 2.0 * (y_axis * y_axis + z_axis * z_axis),
+                    2.0 * (x_axis * y_axis - z_axis * w_axis),
+                    2.0 * (x_axis * z_axis + y_axis * w_axis),
+                ],
+                [
+                    2.0 * (x_axis * y_axis + z_axis * w_axis),
+                    1.0 - 2.0 * (x_axis * x_axis + z_axis * z_axis),
+                    2.0 * (y_axis * z_axis - x_axis * w_axis),
+                ],
+                [
+                    2.0 * (x_axis * z_axis - y_axis * w_axis),
+                    2.0 * (y_axis * z_axis + x_axis * w_axis),
+                    1.0 - 2.0 * (x_axis * x_axis + y_axis * y_axis),
+                ],
+            ],
+            dtype=float,
+        )
 
 
-def _build_oneshot_from_args(args) -> Optional[PointStamped]:
+def _build_oneshot_point_from_args(args) -> Optional[PointStamped]:
     if args.x is None or args.y is None or args.z is None:
+        return None
+    if None not in (args.qx, args.qy, args.qz, args.qw):
         return None
 
     point = PointStamped()
@@ -293,17 +616,46 @@ def _build_oneshot_from_args(args) -> Optional[PointStamped]:
     return point
 
 
+def _build_oneshot_pose_from_args(args) -> Optional[PoseStamped]:
+    if args.x is None or args.y is None or args.z is None:
+        return None
+    if None in (args.qx, args.qy, args.qz, args.qw):
+        return None
+
+    pose = PoseStamped()
+    pose.header.frame_id = args.frame
+    pose.pose.position.x = args.x
+    pose.pose.position.y = args.y
+    pose.pose.position.z = args.z
+    pose.pose.orientation.x = args.qx
+    pose.pose.orientation.y = args.qy
+    pose.pose.orientation.z = args.qz
+    pose.pose.orientation.w = args.qw
+    return pose
+
+
 def main(argv=None):
-    parser = argparse.ArgumentParser(description="DLS IK executor for BCR arm.")
+    parser = argparse.ArgumentParser(description="DLS Cartesian IK executor for the BCR arm.")
     parser.add_argument("--x", type=float, default=None, help="Target X in meters")
     parser.add_argument("--y", type=float, default=None, help="Target Y in meters")
     parser.add_argument("--z", type=float, default=None, help="Target Z in meters")
+    parser.add_argument("--qx", type=float, default=None, help="Target orientation X quaternion")
+    parser.add_argument("--qy", type=float, default=None, help="Target orientation Y quaternion")
+    parser.add_argument("--qz", type=float, default=None, help="Target orientation Z quaternion")
+    parser.add_argument("--qw", type=float, default=None, help="Target orientation W quaternion")
     parser.add_argument("--frame", type=str, default="world", help="Target frame")
     args, ros_args = parser.parse_known_args(argv)
 
+    quaternion_fields = [args.qx, args.qy, args.qz, args.qw]
+    if any(value is not None for value in quaternion_fields) and not all(
+        value is not None for value in quaternion_fields
+    ):
+        parser.error("Provide all quaternion fields (--qx --qy --qz --qw) or none of them.")
+
     rclpy.init(args=ros_args)
-    oneshot = _build_oneshot_from_args(args)
-    node = DlsIkExecutor(oneshot_point=oneshot)
+    oneshot_pose = _build_oneshot_pose_from_args(args)
+    oneshot_point = _build_oneshot_point_from_args(args)
+    node = DlsIkExecutor(oneshot_point=oneshot_point, oneshot_pose=oneshot_pose)
 
     try:
         rclpy.spin(node)

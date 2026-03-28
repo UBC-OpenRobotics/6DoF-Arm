@@ -34,6 +34,7 @@ install(
   scripts/cartesian_target_executor.py
   scripts/cartesian_target_marker.py
   scripts/dls_ik_executor.py
+  scripts/setup_arm_pose.py
   scripts/test_arm_movement.py
   DESTINATION lib/${PROJECT_NAME}
 )

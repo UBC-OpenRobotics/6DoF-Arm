@@ -151,7 +151,6 @@ class CartesianTargetMarker(Node):
         return "data: true" in stdout.lower() or stdout == ""
 
     def _build_marker_sdf(self) -> str:
-        diameter = self._marker_radius * 2.0
         return (
             "<sdf version='1.7'>"
             f"<model name='{self._marker_name}'>"
@@ -168,18 +167,6 @@ class CartesianTargetMarker(Node):
             "<emissive>0.6 0 0 1</emissive>"
             "</material>"
             "</visual>"
-            "<collision name='collision'>"
-            "<geometry><sphere><radius>"
-            f"{self._marker_radius}"
-            "</radius></sphere></geometry>"
-            "</collision>"
-            "<inertial>"
-            "<mass>0.01</mass>"
-            "<inertia>"
-            f"<ixx>{diameter}</ixx><iyy>{diameter}</iyy><izz>{diameter}</izz>"
-            "<ixy>0</ixy><ixz>0</ixz><iyz>0</iyz>"
-            "</inertia>"
-            "</inertial>"
             "</link>"
             "</model>"
             "</sdf>"
