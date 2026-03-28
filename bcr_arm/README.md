@@ -64,6 +64,7 @@ source install/setup.bash
 ## Custom Solver Workflow
 
 Open a separate terminal for each step below.
+TODO: Simplify by creating a single launch file.
 
 ### Terminal 1: Launch Gazebo
 
