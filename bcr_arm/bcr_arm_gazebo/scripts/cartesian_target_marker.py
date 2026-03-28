@@ -3,7 +3,7 @@
 import subprocess
 
 import rclpy
-from geometry_msgs.msg import PointStamped
+from geometry_msgs.msg import PointStamped, PoseStamped
 from rclpy.node import Node
 
 
@@ -14,6 +14,7 @@ class CartesianTargetMarker(Node):
         super().__init__("cartesian_target_marker")
 
         self.declare_parameter("target_topic", "/cartesian_target")
+        self.declare_parameter("target_pose_topic", "/cartesian_target_pose")
         self.declare_parameter("world_name", "default")
         self.declare_parameter("marker_name", "cartesian_target_marker")
         self.declare_parameter("marker_radius", 0.05)
@@ -22,6 +23,7 @@ class CartesianTargetMarker(Node):
         self.declare_parameter("timeout_ms", 3000)
 
         self._target_topic = self.get_parameter("target_topic").value
+        self._target_pose_topic = self.get_parameter("target_pose_topic").value
         self._world_name = self.get_parameter("world_name").value
         self._marker_name = self.get_parameter("marker_name").value
         self._marker_radius = float(self.get_parameter("marker_radius").value)
@@ -34,10 +36,13 @@ class CartesianTargetMarker(Node):
         self._target_sub = self.create_subscription(
             PointStamped, self._target_topic, self._target_callback, 10
         )
+        self._target_pose_sub = self.create_subscription(
+            PoseStamped, self._target_pose_topic, self._target_pose_callback, 10
+        )
 
         self.get_logger().info(
-            "Listening on %s and updating Gazebo marker '%s' in world '%s'"
-            % (self._target_topic, self._marker_name, self._world_name)
+            "Listening on %s (PointStamped) and %s (PoseStamped); updating Gazebo marker '%s' in world '%s'"
+            % (self._target_topic, self._target_pose_topic, self._marker_name, self._world_name)
         )
 
     def _target_callback(self, msg: PointStamped) -> None:
@@ -77,6 +82,21 @@ class CartesianTargetMarker(Node):
             )
         else:
             self.get_logger().error("Failed to move Gazebo marker.")
+
+    def _target_pose_callback(self, msg: PoseStamped) -> None:
+        frame_id = msg.header.frame_id or self._frame_id
+        if frame_id != self._frame_id:
+            self.get_logger().warning(
+                "Ignoring pose target in frame '%s'; expected '%s'." % (frame_id, self._frame_id)
+            )
+            return
+
+        point_msg = PointStamped()
+        point_msg.header = msg.header
+        point_msg.point.x = msg.pose.position.x
+        point_msg.point.y = msg.pose.position.y
+        point_msg.point.z = msg.pose.position.z
+        self._target_callback(point_msg)
 
     def _spawn_marker(self, x_pos: float, y_pos: float, z_pos: float) -> bool:
         service = f"/world/{self._world_name}/create"

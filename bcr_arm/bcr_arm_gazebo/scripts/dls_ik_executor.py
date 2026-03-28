@@ -65,6 +65,9 @@ class DlsIkExecutor(Node):
         self.declare_parameter("grasp_offset_y", 0.0)
         self.declare_parameter("grasp_offset_z", 0.143)
         self.declare_parameter("solver_max_iterations", 120)
+        self.declare_parameter("fallback_to_neutral_on_failure", True)
+        self.declare_parameter("retry_after_neutral_attempts", 1)
+        self.declare_parameter("neutral_retry_joint_tolerance", 0.08)
 
         self._world_frame = self.get_parameter("world_frame").value
         self._target_topic = self.get_parameter("target_topic").value
@@ -161,6 +164,18 @@ class DlsIkExecutor(Node):
             dtype=float,
         )
         self._solver_max_iterations = max(1, int(self.get_parameter("solver_max_iterations").value))
+        self._fallback_to_neutral_on_failure = bool(
+            self.get_parameter("fallback_to_neutral_on_failure").value
+        )
+        self._retry_after_neutral_attempts = max(
+            0, int(self.get_parameter("retry_after_neutral_attempts").value)
+        )
+        self._neutral_retry_joint_tolerance = float(
+            self.get_parameter("neutral_retry_joint_tolerance").value
+        )
+        self._neutral_carry_joint_positions = np.array(
+            [0.0, -1.10, 0.0, 0.90, 0.0, -1.37, 0.0], dtype=float
+        )
 
         self._origins = [
             np.array([0.0, 0.0, 0.025]),
@@ -209,6 +224,8 @@ class DlsIkExecutor(Node):
         self._target_rotation: Optional[np.ndarray] = None
         self._target_kind: Optional[str] = None
         self._pending_solve = False
+        self._retry_attempts_remaining = 0
+        self._retry_after_neutral_pending = False
 
         self._joint_state_sub = self.create_subscription(
             JointState, self._joint_state_topic, self._joint_state_callback, 10
@@ -261,6 +278,8 @@ class DlsIkExecutor(Node):
         self._target_rotation = self._point_target_rotation_from_policy()
         self._target_kind = "point"
         self._pending_solve = True
+        self._retry_attempts_remaining = self._retry_after_neutral_attempts
+        self._retry_after_neutral_pending = False
 
         self.get_logger().info(
             "Accepted %s point target x=%.3f y=%.3f z=%.3f (orientation policy=%s)"
@@ -306,6 +325,8 @@ class DlsIkExecutor(Node):
         self._target_rotation = rotation
         self._target_kind = "pose"
         self._pending_solve = True
+        self._retry_attempts_remaining = self._retry_after_neutral_attempts
+        self._retry_after_neutral_pending = False
         self.get_logger().info(
             "Accepted %s pose target x=%.3f y=%.3f z=%.3f"
             % (source, self._target_position[0], self._target_position[1], self._target_position[2])
@@ -314,6 +335,16 @@ class DlsIkExecutor(Node):
     def _servo_timer_callback(self) -> None:
         if self._current_q is None or self._target_position is None:
             return
+
+        if self._retry_after_neutral_pending:
+            if self._is_near_joint_target(
+                self._neutral_carry_joint_positions, self._neutral_retry_joint_tolerance
+            ):
+                self._retry_after_neutral_pending = False
+                self._pending_solve = True
+                self.get_logger().info("Neutral carry pose reached. Retrying previous target.")
+            else:
+                return
 
         if not self._pending_solve:
             if self._oneshot:
@@ -340,7 +371,33 @@ class DlsIkExecutor(Node):
                 rclpy.shutdown()
             return
 
-        q_command, position_error_norm, orientation_error_norm = solution
+        q_command, position_error_norm, orientation_error_norm, converged = solution
+        if (
+            not converged
+            and self._fallback_to_neutral_on_failure
+            and self._target_kind == "point"
+            and self._point_target_orientation_policy == "neutral"
+        ):
+            retry_message = ""
+            if self._retry_attempts_remaining > 0:
+                self._retry_attempts_remaining -= 1
+                self._retry_after_neutral_pending = True
+                retry_message = " Will retry the same target after resetting to neutral."
+            else:
+                retry_message = " No retry attempts remain; clearing the target after reset."
+            self.get_logger().warning(
+                "Locked neutral pose could not be satisfied within tolerance. "
+                "Returning to neutral carry pose instead. Best position error: %.4f m, "
+                "orientation error: %.4f rad.%s"
+                % (position_error_norm, orientation_error_norm, retry_message)
+            )
+            self._publish_trajectory(self._neutral_carry_joint_positions, self._goal_time_sec)
+            if not self._retry_after_neutral_pending:
+                self._clear_target()
+            if self._oneshot and not self._retry_after_neutral_pending:
+                rclpy.shutdown()
+            return
+
         self._publish_trajectory(q_command, self._goal_time_sec)
         self.get_logger().info(
             "Published solved joint target. Expected final position error: %.4f m, orientation error: %.4f rad"
@@ -356,17 +413,7 @@ class DlsIkExecutor(Node):
             self._target_rotation = self._point_target_rotation_from_policy(current_rotation)
 
         if self._target_rotation is not None:
-            if (
-                self._target_kind == "point"
-                and self._point_target_orientation_policy == "neutral"
-            ):
-                orientation_error = self._axis_alignment_error(
-                    current_rotation,
-                    self._tool_up_axis,
-                    self._target_rotation @ self._tool_up_axis,
-                )
-            else:
-                orientation_error = self._rotation_error(current_rotation, self._target_rotation)
+            orientation_error = self._rotation_error(current_rotation, self._target_rotation)
         elif self._orientation_mode == "exact":
             self._target_rotation = current_rotation.copy()
             orientation_error = np.zeros(3, dtype=float)
@@ -411,7 +458,7 @@ class DlsIkExecutor(Node):
 
     def _solve_target_configuration(
         self, q_seed: np.ndarray
-    ) -> Optional[tuple[np.ndarray, float, float]]:
+    ) -> Optional[tuple[np.ndarray, float, float, bool]]:
         q_trial = q_seed.copy()
         best_q = q_trial.copy()
         best_cost = float("inf")
@@ -439,7 +486,7 @@ class DlsIkExecutor(Node):
                 position_error_norm <= self._position_tolerance
                 and orientation_error_norm <= self._orientation_tolerance
             ):
-                return q_trial.copy(), position_error_norm, orientation_error_norm
+                return q_trial.copy(), position_error_norm, orientation_error_norm, True
 
             dq = self._solve_dq(jacobian, position_error, orientation_error)
             if np.linalg.norm(dq) < 1e-8:
@@ -450,8 +497,19 @@ class DlsIkExecutor(Node):
             )
 
         if np.isfinite(best_cost):
-            return best_q, best_position_error_norm, best_orientation_error_norm
+            return best_q, best_position_error_norm, best_orientation_error_norm, False
         return None
+
+    def _clear_target(self) -> None:
+        self._target_position = None
+        self._target_rotation = None
+        self._target_kind = None
+        self._pending_solve = False
+        self._retry_attempts_remaining = 0
+        self._retry_after_neutral_pending = False
+
+    def _is_near_joint_target(self, joint_target: np.ndarray, tolerance: float) -> bool:
+        return bool(np.max(np.abs(self._current_q - joint_target)) <= tolerance)
 
     def _forward_kinematics(self, q: np.ndarray, with_jacobian: bool = False):
         transform = np.eye(4)
