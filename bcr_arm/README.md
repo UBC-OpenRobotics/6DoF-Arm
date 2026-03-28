@@ -1,227 +1,234 @@
 # BCR Arm
 
-https://github.com/user-attachments/assets/3a08bc22-2d3c-4b57-9e81-967f29c440c9
+Custom ROS 2 / Gazebo workspace for the Black Coffee Robotics 7-DOF arm, with the main workflow centered on our custom damped least squares (DLS) inverse kinematics solver.
 
-## About
+![Gazebo BCR Arm simulation](images/gz_img1.png)
 
-This repository contains a Gazebo Fortress simulation for a 7-DOF robotic arm. It includes ROS2 Control integration and MoveIt for motion planning. Currently, the project supports:
+## What This Repo Focuses On
 
-1. [ROS2 Humble + Gazebo Fortress (Ubuntu 22.04)](#humble--fortress-ubuntu-2204)
-2. [ROS2 Jazzy + Gazebo Harmonic (Ubuntu 24.04)](#jazzy--harmonic-ubuntu-2404)
-3. [Nvidia Isaac Sim](#nvidia-isaac-sim)
+This workspace is primarily used to:
 
+- launch the BCR arm in Gazebo with `ros2_control`
+- initialize the arm in a repeatable setup pose
+- drive the arm from Cartesian targets using our custom solver in `bcr_arm_gazebo/scripts/dls_ik_executor.py`
+- visualize target points in Gazebo
+- run repeatable Cartesian test sequences
 
-## Humble + Fortress (Ubuntu 22.04)
+The repo also contains MoveIt and Isaac Sim assets, but this README is intentionally focused on the custom solver workflow we use for development and testing.
 
-### Dependencies
+## Relevant Packages
 
-Ensure you have ROS2 Humble and Gazebo Fortress installed.
+- `bcr_arm_description`: URDF, meshes, RViz configs, and robot description assets
+- `bcr_arm_gazebo`: Gazebo launch files, worlds, and custom control / IK scripts
+- `bcr_arm_moveit_config`: MoveIt configuration for the arm
+- `bcr_arm`: metapackage for the stack
+
+## Prerequisites
+
+Recommended environment:
+
+- Ubuntu 22.04
+- ROS 2 Humble
+- Gazebo Fortress
+
+Install the base tools:
 
 ```bash
-# Install ROS2 Humble (if not already installed)
 sudo apt update
-sudo apt install -y ros-humble-desktop
-# Install Gazebo Fortress
-sudo apt install -y gz-fortress
+sudo apt install -y \
+  ros-humble-desktop \
+  gz-fortress \
+  python3-colcon-common-extensions \
+  python3-rosdep
 ```
 
-Other dependencies can be installed using `rosdep` (from the root directory of your workspace):
+If `rosdep` has not been initialized yet:
+
 ```bash
-# From the root directory of your workspace (e.g., ~/bcr_ws)
-rosdep install --from-paths src --ignore-src -r -y
+sudo rosdep init
+rosdep update
 ```
 
-### Source Build
+## Build
+
+These commands assume this repository itself is your colcon workspace root.
 
 ```bash
-# From the root of your workspace
+cd ~/openRobotics/bcr_arm
+source /opt/ros/humble/setup.bash
+rosdep install --from-paths . --ignore-src -r -y
 colcon build --symlink-install
-
-# Source the workspace
 source install/setup.bash
 ```
 
-### Binary Install
+## Custom Solver Workflow
+
+Open a separate terminal for each step below.
+
+### Terminal 1: Launch Gazebo
 
 ```bash
-# To install bcr arm binary run
-sudo apt-get install ros-humble-bcr-arm
-```
-
-### Launch Files
-
-#### 1. Gazebo Simulation with ROS2 Control and MoveIt2 Motion Planning
-To launch the Gazebo simulation with ROS2 Control and MoveIt2 for motion planning, use the following command:
-```bash
-ros2 launch bcr_arm_moveit_config bcr_arm_moveit_gazebo.launch.py 
-```
-
-#### 2. Gazebo Simulation with ROS2 Control
-
-This is the primary launch file to bring up the full simulation environment.
-```bash
-ros2 launch bcr_arm_gazebo bcr_arm.gazebo.launch.py
-```
--  This uses ROS2 *mock controllers* for the arm. Use scripts from `bcr_arm_gazebo` to send commands to the arm. 
--  Supports launch argument: `world_path:=<path_to_world>`
-
-
-## Jazzy + Harmonic (Ubuntu 24.04)
-
-### Dependencies
-
-Ensure you have ROS2 Jazzy and Gazebo Harmonic installed.
-
-```bash
-# Install ROS2 jazzy (if not already installed)
-sudo apt update
-sudo apt install -y ros-jazzy-desktop
-# Install Gazebo Harmonic
-sudo apt install -y gz-harmonic
-```
-
-Build topic_based_ros2_control from source (need to build from source for jazzy, to use Moveit with Isaac Sim):
-
-```bash
-git clone https://github.com/PickNikRobotics/topic_based_ros2_control.git
-cd topic_based_ros2_control
-rosdep install --from-paths src --ignore-src -r -y
-colcon build --symlink-install --event-handlers log-
+cd ~/openRobotics/bcr_arm
+source /opt/ros/humble/setup.bash
 source install/setup.bash
+ros2 launch bcr_arm_gazebo bcr_arm.gazebo.launch.py
 ```
 
-Other dependencies can be installed using `rosdep` (from the root directory of your workspace):
-```bash
-# From the root directory of your workspace (e.g., ~/bcr_ws)
-rosdep install --from-paths src --ignore-src -r -y
-```
+### Terminal 2: Send the Setup Pose Once
 
-Build the project:
+This sends the arm to the default `neutral_carry` pose, which is the recommended starting point for solver tests.
 
 ```bash
-# From the root of your workspace
-colcon build --symlink-install
-
-# Source the workspace
+cd ~/openRobotics/bcr_arm
+source /opt/ros/humble/setup.bash
 source install/setup.bash
+ros2 run bcr_arm_gazebo setup_arm_pose.py
 ```
 
+Optional named poses:
 
-### Launch Files
-
-#### 1. Gazebo Simulation with ROS2 Control and MoveIt2 Motion Planning
-To launch the Gazebo simulation with ROS2 Control and MoveIt2 for motion planning, use the following command:
 ```bash
-ros2 launch bcr_arm_moveit_config bcr_arm_moveit_gazebo.launch.py 
+ros2 run bcr_arm_gazebo setup_arm_pose.py --pose home
+ros2 run bcr_arm_gazebo setup_arm_pose.py --pose neutral_carry_yaw_left
+ros2 run bcr_arm_gazebo setup_arm_pose.py --pose neutral_carry_yaw_right
 ```
 
-#### 2. Gazebo Simulation with ROS2 Control
+### Terminal 3: Visualize Cartesian Targets
 
-This is the primary launch file to bring up the full simulation environment.
-```bash
-ros2 launch bcr_arm_gazebo bcr_arm.gazebo.launch.py
-```
--  This uses ROS2 *mock controllers* for the arm. Use scripts from `bcr_arm_gazebo` to send commands to the arm.
--  Supports launch argument: `world_path:=<path_to_world>`
-
-
-
-## Nvidia Isaac Sim
-
-### Dependencies
-
-Ensure you have Nvidia Isaac Sim installed.
-
-- Download the Isaac Sim SDK from [here](https://developer.nvidia.com/isaac-sim)
-- Install the SDK
-- Launch Isaac Sim (.~/isaacsim/isaac-sim.sh) and load the [bcr_arm usd](isaacsim/bcr_arm_scene.usd)
-
-### Launch 
-
-To launch Isaac Sim and use Moveit for motion planning and control.
-
-To launch the robot in Isaac Sim:
-
-- Add in extra viewports for different camera views.
-- Start the Simulation: Run the simulation directly within Isaac Sim.
-
-To view and launch moveit:
+This node creates and moves a visible marker in Gazebo so the commanded target is easy to inspect.
 
 ```bash
-ros2 launch bcr_arm_moveit_config isaac_demo.launch.py
+cd ~/openRobotics/bcr_arm
+source /opt/ros/humble/setup.bash
+source install/setup.bash
+ros2 run bcr_arm_gazebo cartesian_target_marker.py --ros-args -p marker_radius:=0.025
 ```
 
+### Terminal 4: Start the Custom DLS IK Executor
 
-## Controlling the Arm
-
-Once the simulation with controllers is running (e.g., via `bcr_arm.gazebo.launch.py`), you can send commands.
-
-**Using the CLI Script:**
-
-A Python script is provided to send predefined or custom joint goals.
 ```bash
-# Ensure your workspace is sourced
-# ros2 run bcr_arm_gazebo test_arm_movement.py
-ros2 run bcr_arm_gazebo control_arm_cli.py
-```
-Follow the on-screen prompts to select poses or enter custom joint angles.
-
-**Using Cartesian Targets (with MoveIt move_group running):**
-
-You can send numeric Cartesian targets to MoveIt through a helper node:
-```bash
-# Terminal 1: launch MoveIt + Gazebo
-ros2 launch bcr_arm_moveit_config bcr_arm_moveit_gazebo.launch.py
-
-# Terminal 2: start cartesian target executor (listens on /cartesian_target)
-ros2 run bcr_arm_gazebo cartesian_target_executor.py
-```
-
-Publish a target point:
-```bash
-ros2 topic pub --once /cartesian_target geometry_msgs/msg/PointStamped \
-'{header: {frame_id: world}, point: {x: 0.35, y: 0.10, z: 0.45}}'
-```
-
-Or send a one-shot point directly:
-```bash
-ros2 run bcr_arm_gazebo cartesian_target_executor.py --x 0.35 --y 0.10 --z 0.45 --frame world
-```
-
-**Using the custom DLS IK executor (no MoveIt):**
-
-This path solves position-only IK numerically from the current joint state and publishes directly to the joint trajectory controller.
-```bash
-# Terminal 1: launch Gazebo + controllers
-ros2 launch bcr_arm_gazebo bcr_arm.gazebo.launch.py
-
-# Terminal 2: start the DLS IK node
+cd ~/openRobotics/bcr_arm
+source /opt/ros/humble/setup.bash
+source install/setup.bash
 ros2 run bcr_arm_gazebo dls_ik_executor.py
 ```
 
-Publish a target point:
+### Terminal 5: Publish Targets
+
+You can either publish a one-off Cartesian point:
+
 ```bash
+cd ~/openRobotics/bcr_arm
+source /opt/ros/humble/setup.bash
+source install/setup.bash
 ros2 topic pub --once /cartesian_target geometry_msgs/msg/PointStamped \
-'{header: {frame_id: world}, point: {x: 0.25, y: 0.05, z: 0.35}}'
+'{header: {frame_id: world}, point: {x: -0.10, y: 0.40, z: 0.25}}'
 ```
 
-Or send a one-shot target directly:
+Or run the repeatable target sequence:
+
 ```bash
-ros2 run bcr_arm_gazebo dls_ik_executor.py --x 0.25 --y 0.05 --z 0.35 --frame world
+source /opt/ros/humble/setup.bash
+source ~/openRobotics/bcr_arm/install/setup.bash
+ros2 run bcr_arm_gazebo cartesian_target_test_suite.py
 ```
 
-To visualize the commanded target inside Gazebo, run the marker node in another terminal:
+## What Each Custom Node Does
+
+### `setup_arm_pose.py`
+
+Sends a one-shot joint trajectory to move the robot into a known setup pose before testing.
+
+### `dls_ik_executor.py`
+
+Our custom IK node:
+
+- subscribes to `/cartesian_target` as `geometry_msgs/msg/PointStamped`
+- subscribes to `/cartesian_target_pose` as `geometry_msgs/msg/PoseStamped`
+- reads the current state from `/joint_states`
+- solves IK numerically from the current joint configuration
+- publishes the solved command to `/joint_trajectory_controller/joint_trajectory`
+
+### `cartesian_target_marker.py`
+
+Creates and updates a red Gazebo marker at the active target position.
+
+### `cartesian_target_test_suite.py`
+
+Publishes a staged target sequence for repeatable solver testing and pauses between steps for manual inspection.
+
+## Solver Notes
+
+The custom solver in `dls_ik_executor.py` uses:
+
+- damped least squares updates
+- a forward kinematics and Jacobian model defined directly in the node
+- weighted position and orientation error terms
+- joint limit clipping
+- per-step joint and velocity limiting
+- optional retry behavior through the neutral carry pose
+
+Point targets and full pose targets are both supported.
+
+For point targets, the solver can be configured to:
+
+- keep the current end-effector orientation
+- lock to the neutral orientation
+- ignore orientation and solve position only
+
+## Useful Solver Parameters
+
+You can tune the solver at runtime with ROS parameters:
+
 ```bash
-ros2 run bcr_arm_gazebo cartesian_target_marker.py
+ros2 run bcr_arm_gazebo dls_ik_executor.py --ros-args \
+  -p damping_lambda:=0.08 \
+  -p goal_time_sec:=3.0 \
+  -p position_tolerance:=0.005 \
+  -p orientation_tolerance:=0.06 \
+  -p point_target_orientation_policy:=current
 ```
 
-It listens on the same `/cartesian_target` topic and uses Gazebo's native `ign service` interface to create and move a red sphere marker in the running world.
+Common parameters:
 
+- `damping_lambda`
+- `goal_time_sec`
+- `position_tolerance`
+- `orientation_tolerance`
+- `step_scale`
+- `max_joint_step`
+- `max_joint_velocity`
+- `solver_max_iterations`
+- `point_target_orientation_policy` with `current`, `neutral`, or `none`
+- `orientation_mode` with `exact` or `upright_free_yaw`
 
-## Images
+## Pose Target Example
 
-![Gazebo BCR Arm simulation with Moveit2](images/gz_img1.png)
+To send a full Cartesian pose target instead of only a point:
 
-![Isaac Sim BCR Arm simulation with Moveit2](images/isaac_img2.png)
+```bash
+ros2 topic pub --once /cartesian_target_pose geometry_msgs/msg/PoseStamped \
+'{header: {frame_id: world}, pose: {position: {x: -0.10, y: 0.40, z: 0.25}, orientation: {x: 0.0, y: -0.70710678, z: 0.0, w: 0.70710678}}}'
+```
 
-![Jazzy BCR Arm simulation](images/jazzy_img3.png)
+You can also send a one-shot target directly through the solver process:
+
+```bash
+ros2 run bcr_arm_gazebo dls_ik_executor.py --x -0.10 --y 0.40 --z 0.25
+```
+
+Or with an explicit quaternion:
+
+```bash
+ros2 run bcr_arm_gazebo dls_ik_executor.py \
+  --x -0.10 --y 0.40 --z 0.25 \
+  --qx 0.0 --qy -0.70710678 --qz 0.0 --qw 0.70710678
+```
+
+## Useful Files
+
+- `bcr_arm_gazebo/scripts/dls_ik_executor.py`
+- `bcr_arm_gazebo/scripts/setup_arm_pose.py`
+- `bcr_arm_gazebo/scripts/cartesian_target_marker.py`
+- `bcr_arm_gazebo/scripts/cartesian_target_test_suite.py`
+- `bcr_arm_gazebo/launch/bcr_arm.gazebo.launch.py`
