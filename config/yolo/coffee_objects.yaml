@@ -1,0 +1,19 @@
+# YOLOv8 dataset configuration for coffee object detection
+# Place your labeled dataset under /data/coffee_objects/ with this structure:
+#   images/train/  images/val/  images/test/
+#   labels/train/  labels/val/  labels/test/
+
+path: /data/coffee_objects
+train: images/train
+val: images/val
+test: images/test
+
+nc: 7
+names:
+  0: cup
+  1: spoon
+  2: milk_carton
+  3: sugar_container
+  4: coffee_machine_button
+  5: coffee_pod
+  6: saucer
