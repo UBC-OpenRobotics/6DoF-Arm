@@ -1,0 +1,12 @@
+# YOLOv8 training hyperparameters
+model: yolov8n.pt
+data: config/yolo/coffee_objects.yaml
+epochs: 100
+imgsz: 640
+batch: 8
+device: cpu        # use "mps" for M1 Metal acceleration (native only, not Docker)
+optimizer: AdamW
+lr0: 0.001
+augment: true
+project: runs/train
+name: coffee_objects

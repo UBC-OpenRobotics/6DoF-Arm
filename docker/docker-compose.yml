@@ -1,0 +1,28 @@
+version: "3.8"
+
+services:
+  ros2:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile
+      target: dev
+    container_name: arm_ros2
+    privileged: true
+    network_mode: host
+    environment:
+      - DISPLAY=${DISPLAY:-:0}
+      - RMW_IMPLEMENTATION=rmw_cyclonedds_cpp
+      - ROS_DOMAIN_ID=0
+    volumes:
+      - ../src:/ros2_ws/src
+      - ../config:/ros2_ws/config
+      - /dev:/dev
+    devices:
+      - /dev/bus/usb:/dev/bus/usb
+    command: >
+      bash -c "
+        cd /ros2_ws &&
+        colcon build --symlink-install &&
+        source install/setup.bash &&
+        ros2 launch arm_bringup sim.launch.py
+      "
