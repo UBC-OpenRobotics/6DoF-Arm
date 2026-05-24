@@ -43,14 +43,14 @@ def generate_launch_description():
             condition=IfCondition(LaunchConfiguration('enable_camera')),
         ),
 
-        # RealSense health monitor
-        Node(
-            package='arm_perception',
-            executable='realsense_node',
-            name='realsense_node',
-            parameters=[realsense_config],
-            output='screen',
-        ),
+        # # RealSense health monitor --> commented out for now because we can't have two nodes using the realsense camera
+        # Node(
+        #     package='arm_perception',
+        #     executable='realsense_node',
+        #     name='realsense_node',
+        #     parameters=[realsense_config],
+        #     output='screen',
+        # ),
 
         # YOLO detector
         Node(

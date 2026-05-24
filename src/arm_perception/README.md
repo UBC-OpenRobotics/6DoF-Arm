@@ -17,4 +17,23 @@
   - q — quit      
   - s — save screenshot
   - d — toggle info overlay
+
+
+  ## Perception Launch with a RealSense Camera
+
+  Runs on Linux with a RealSense RGB and depth camera. See Section Using WSL2 for Windows.
+
+  To launch visualization (Rviz), run this inside the container:
+
+  ```bash 
+
+  source /opt/ros/humble/setup.bash  
+  rviz2                                        
+```
+
+  ## Using WSL2
+
+  Can work on linux as a VM using WSL2
+
+  Make sure that WSL2 can see USB attachments (use USBIPD).
                                   
