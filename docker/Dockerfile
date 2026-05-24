@@ -32,7 +32,7 @@ RUN apt-get update && apt-get install -y \
 RUN pip3 install --no-cache-dir \
     ultralytics==8.1.0 \
     opencv-python-headless \
-    numpy
+    "numpy<2"
 
 # Visualization tools
 FROM base AS viz
