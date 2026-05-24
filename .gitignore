@@ -1,2 +1,26 @@
+# Python cache
 __pycache__/
 *.pyc
+*.pyo
+
+# macOS
+.DS_Store
+.DS_Store?
+
+# VS Code
+.vscode/
+
+# ROS2 build artifacts
+build/
+install/
+log/
+
+# Python virtual environments
+.venv/
+venv/
+
+# Docker
+*.env
+
+# Colcon
+.colcon_ignore
