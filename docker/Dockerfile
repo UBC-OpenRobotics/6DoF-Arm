@@ -47,6 +47,8 @@ WORKDIR /ros2_ws
 
 COPY src/ src/
 
+RUN apt-get update && rosdep update
+
 RUN . /opt/ros/${ROS_DISTRO}/setup.sh && \
     rosdep install --from-paths src --ignore-src -r -y && \
     colcon build --symlink-install
