@@ -45,6 +45,12 @@ RUN apt-get update && apt-get install -y \
 FROM viz AS dev
 WORKDIR /ros2_ws
 
+# Install visualization tools in the development stage for now for debugging and vision development purposes. Remove this later to separate RViz and have it in the viz stage only.
+RUN apt-get update && apt-get install -y \
+    ros-${ROS_DISTRO}-rviz2 \
+    ros-${ROS_DISTRO}-joint-state-publisher-gui \
+    && rm -rf /var/lib/apt/lists/* 
+
 COPY src/ src/
 
 RUN apt-get update && rosdep update
