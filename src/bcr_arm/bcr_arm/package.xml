@@ -12,6 +12,8 @@
   <exec_depend>bcr_arm_description</exec_depend>
   <exec_depend>bcr_arm_gazebo</exec_depend>
   <exec_depend>bcr_arm_moveit_config</exec_depend>
+  <exec_depend>bcr_arm_rx150</exec_depend>
+  <exec_depend>data_collector</exec_depend>
 
   <export>
     <build_type>ament_cmake</build_type>

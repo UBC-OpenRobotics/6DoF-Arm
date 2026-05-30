@@ -1,0 +1,50 @@
+x-bcr-common: &bcr-common
+  build:
+    context: .
+    dockerfile: docker/Dockerfile
+  image: bcr-arm:humble
+  working_dir: /workspaces/bcr_arm
+  stdin_open: true
+  tty: true
+  network_mode: host
+  ipc: host
+  environment:
+    DISPLAY: ${DISPLAY:-}
+    QT_X11_NO_MITSHM: "1"
+    AMENT_TRACE_SETUP_FILES: ""
+    AMENT_PYTHON_EXECUTABLE: "/usr/bin/python3"
+  volumes:
+    - .:/workspaces/bcr_arm
+    - /tmp/.X11-unix:/tmp/.X11-unix:rw
+
+services:
+  workspace:
+    <<: *bcr-common
+    command: bash
+    profiles: ["dev"]
+
+  rx150-sim:
+    <<: *bcr-common
+    command: >
+      bash -lc
+      "bash /workspaces/bcr_arm/docker/setup_workspace.sh &&
+      set +u &&
+      source /workspaces/bcr_arm/install/setup.bash &&
+      ros2 launch bcr_arm_rx150 rx150_dls_sim_stack.launch.py"
+    profiles: ["sim"]
+
+  rx150-hardware:
+    <<: *bcr-common
+    privileged: true
+    volumes:
+      - .:/workspaces/bcr_arm
+      - /tmp/.X11-unix:/tmp/.X11-unix:rw
+      - /dev:/dev
+      - /run/udev:/run/udev:ro
+    command: >
+      bash -lc
+      "bash /workspaces/bcr_arm/docker/setup_workspace.sh &&
+      set +u &&
+      source /workspaces/bcr_arm/install/setup.bash &&
+      ros2 launch bcr_arm_rx150 rx150_dls_stack.launch.py"
+    profiles: ["hardware"]

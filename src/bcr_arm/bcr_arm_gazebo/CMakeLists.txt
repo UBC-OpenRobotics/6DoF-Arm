@@ -32,6 +32,7 @@ install(
   PROGRAMS
   scripts/control_arm_cli.py
   scripts/cartesian_target_executor.py
+  scripts/cartesian_target_test_suite.py
   scripts/cartesian_target_marker.py
   scripts/dls_ik_executor.py
   scripts/setup_arm_pose.py
