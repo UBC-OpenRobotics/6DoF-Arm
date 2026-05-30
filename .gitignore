@@ -1,3 +1,4 @@
+<<<<<<< Updated upstream
 # Python cache
 __pycache__/
 *.pyc
@@ -24,3 +25,9 @@ venv/
 
 # Colcon
 .colcon_ignore
+=======
+software-tm-manipulation/
+bcr_arm/tmp_backup_cleanup/
+.codex
+.codex/
+>>>>>>> Stashed changes

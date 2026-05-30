@@ -2,3 +2,7 @@ install/*
 build/*
 log/*
 isaacsim/_*/*
+.codex
+**/__pycache__/
+*.pyc
+data/

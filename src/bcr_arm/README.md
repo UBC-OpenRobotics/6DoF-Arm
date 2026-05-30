@@ -1,6 +1,11 @@
 # BCR Arm
 
-Custom ROS 2 / Gazebo workspace for the Black Coffee Robotics 7-DOF arm, with the main workflow centered on our custom damped least squares (DLS) inverse kinematics solver.
+Custom ROS 2 workspace for two related manipulation tracks:
+
+- the original Black Coffee Robotics 7-DOF arm in Gazebo
+- a 5-DOF RX-150 track for simulation and physical-arm experiments
+
+The main custom work in this repo is centered on damped least squares (DLS) inverse kinematics, Cartesian target testing, and higher-level task experimentation.
 
 ![Gazebo BCR Arm simulation](images/gz_img1.png)
 
@@ -8,20 +13,75 @@ Custom ROS 2 / Gazebo workspace for the Black Coffee Robotics 7-DOF arm, with th
 
 This workspace is primarily used to:
 
-- launch the BCR arm in Gazebo with `ros2_control`
-- initialize the arm in a repeatable setup pose
-- drive the arm from Cartesian targets using our custom solver in `bcr_arm_gazebo/scripts/dls_ik_executor.py`
-- visualize target points in Gazebo
-- run repeatable Cartesian test sequences
+- launch the custom 7-DOF BCR arm in Gazebo
+- drive the BCR arm from Cartesian targets using a custom DLS solver
+- bring up the RX-150 in both simulation and hardware from within this workspace
+- run repeatable Cartesian target tests for both the BCR arm and RX-150
+- experiment with motion, perception, and task-level robotics workflows
 
-The repo also contains MoveIt and Isaac Sim assets, but this README is intentionally focused on the custom solver workflow we use for development and testing.
+The repo also contains MoveIt, description, and Isaac-related assets, but this README focuses first on the setups most people will actually launch.
 
 ## Relevant Packages
 
 - `bcr_arm_description`: URDF, meshes, RViz configs, and robot description assets
 - `bcr_arm_gazebo`: Gazebo launch files, worlds, and custom control / IK scripts
 - `bcr_arm_moveit_config`: MoveIt configuration for the arm
+- `bcr_arm_rx150`: RX-150 launch files and safe hardware test utilities
+- `data_collector`: custom ROS 2 Python nodes for joint-state and point-cloud capture
 - `bcr_arm`: metapackage for the stack
+- `interbotix`: vendored subset of the Interbotix RX-150 support stack used by the RX-150 sim, control, and MoveIt launches
+
+## Available Setups
+
+This repo currently exposes three main robot setups:
+
+### 1. BCR Arm Gazebo
+
+This is the original custom 7-DOF arm workflow. It uses the repo's Gazebo world, arm model, and original custom DLS IK solver in `bcr_arm_gazebo`.
+
+Use this when the goal is to:
+
+- work on the original BCR arm
+- test the 7-DOF custom solver in simulation
+- publish Cartesian targets and inspect the result in Gazebo
+
+Primary launch:
+
+```bash
+ros2 launch bcr_arm_gazebo bcr_arm.gazebo.launch.py
+```
+
+### 2. RX-150 Gazebo
+
+This is the newer 5-DOF RX-150 simulation workflow. It is exposed through `bcr_arm_rx150`, but the simulator itself is a thin wrapper around the upstream Interbotix RX-150 Gazebo Classic stack.
+
+Use this when the goal is to:
+
+- test RX-150-targeted workflows without hardware
+- compare custom motion behavior against the physical RX-150 track
+- keep all RX-150 launches local to `bcr_arm`
+
+Primary launch:
+
+```bash
+ros2 launch bcr_arm_rx150 rx150_gz_classic.launch.py
+```
+
+### 3. RX-150 Hardware
+
+This is the physical 5-DOF RX-150 workflow. It uses this repo for both the project-level scripts and the vendored RX-150 support stack, including the low-level driver, descriptions, and launch infrastructure.
+
+Use this when the goal is to:
+
+- control the real RX-150 from `bcr_arm`
+- run safe named poses and smoke tests
+- test the custom RX-150 DLS stack on hardware
+
+Primary launch:
+
+```bash
+ros2 launch bcr_arm_rx150 rx150_control.launch.py
+```
 
 ## Prerequisites
 
@@ -29,7 +89,8 @@ Recommended environment:
 
 - Ubuntu 22.04
 - ROS 2 Humble
-- Gazebo Fortress
+- Gazebo Fortress for the BCR arm simulation
+- Gazebo Classic 11 for the RX-150 Gazebo simulation
 
 Install the base tools:
 
@@ -37,6 +98,7 @@ Install the base tools:
 sudo apt update
 sudo apt install -y \
   ros-humble-desktop \
+  gazebo \
   gz-fortress \
   python3-colcon-common-extensions \
   python3-rosdep
@@ -51,7 +113,7 @@ rosdep update
 
 ## Build
 
-These commands assume this repository itself is your colcon workspace root.
+These commands assume this repository itself is the colcon workspace root.
 
 ```bash
 cd ~/openRobotics/bcr_arm
@@ -61,7 +123,182 @@ colcon build --symlink-install
 source install/setup.bash
 ```
 
-## Custom Solver Workflow
+The vendored `interbotix` subtree is included so the RX-150 workflows can build from a fresh clone without requiring a separate `~/interbotix_ws`.
+
+## Docker Support
+
+This repo includes a workspace-level Docker setup for the RX-150 simulation and hardware workflows:
+
+- `workspace`: interactive development shell
+- `rx150-sim`: RX-150 Gazebo sim plus the custom DLS solver
+- `rx150-hardware`: physical RX-150 plus the custom DLS solver
+
+Support expectations:
+
+- Ubuntu/Linux host: supported for development, RX-150 sim, and RX-150 hardware
+- macOS/Windows host: useful for development and limited containerized workflows, but not recommended as the primary path for physical robot or camera access
+
+Important note:
+
+- The Docker setup makes the repo environment reproducible.
+- Physical RX-150 use still depends on the host exposing the USB/serial devices correctly.
+- The `rx150-hardware` Docker service is intended for Linux hosts.
+
+Build the image:
+
+```bash
+cd ~/openRobotics/bcr_arm
+docker compose build
+```
+
+Open an interactive development shell:
+
+```bash
+docker compose run --rm workspace
+```
+
+Launch the RX-150 sim stack in Docker:
+
+```bash
+xhost +local:docker
+docker compose run --rm --service-ports rx150-sim
+```
+
+Launch the RX-150 hardware stack in Docker on Linux:
+
+```bash
+xhost +local:docker
+docker compose run --rm --service-ports rx150-hardware
+```
+
+The helper script `bcr-setup-workspace` inside the container runs:
+
+- `rosdep install --from-paths . --ignore-src -r -y`
+- `colcon build --packages-up-to bcr_arm_rx150 --symlink-install`
+
+This means the Docker launch services build the RX-150 path before starting the requested stack.
+
+## Optional External Underlay
+
+If an existing Interbotix workspace is already available, it can still be sourced as an underlay. This is optional for the RX-150 path in this repo, not required.
+
+Typical setup:
+
+```bash
+source /opt/ros/humble/setup.bash
+source ~/interbotix_ws/install/setup.bash
+cd ~/openRobotics/bcr_arm
+colcon build --symlink-install
+source install/setup.bash
+```
+
+When both are present, the local vendored packages in this repo are intended to be the project-facing source of truth.
+
+For RX-150 Gazebo Classic simulation, it is also helpful to source Gazebo Classic's setup file:
+
+```bash
+source /usr/share/gazebo-11/setup.sh
+```
+
+## RX-150 Hardware Workflow
+
+Launch the physical RX-150 driver from this repo:
+
+```bash
+cd ~/openRobotics/bcr_arm
+source /opt/ros/humble/setup.bash
+source install/setup.bash
+ros2 launch bcr_arm_rx150 rx150_control.launch.py
+```
+
+Send a named pose in another terminal:
+
+```bash
+cd ~/openRobotics/bcr_arm
+source /opt/ros/humble/setup.bash
+source install/setup.bash
+ros2 run bcr_arm_rx150 rx150_named_pose --pose neutral_carry
+```
+
+Run the small lift-and-return smoke test:
+
+```bash
+ros2 run bcr_arm_rx150 rx150_smoke_test
+```
+
+Launch the MoveIt interface for the real arm:
+
+```bash
+ros2 launch bcr_arm_rx150 rx150_moveit_interface.launch.py
+```
+
+Run the custom DLS stack for the physical RX-150:
+
+```bash
+ros2 launch bcr_arm_rx150 rx150_dls_stack.launch.py
+```
+
+In another terminal, send a safe starting pose:
+
+```bash
+ros2 run bcr_arm_rx150 rx150_named_pose --pose neutral_carry
+```
+
+Then publish conservative physical-arm targets with the custom sender:
+
+```bash
+ros2 run bcr_arm_rx150 rx150_target_test_suite
+```
+
+Available RX-150 test suites:
+
+- `smoke`: smallest, safest reach checks
+- `lateral`: center, left, and right point targets
+- `pose`: conservative exact-pose checks
+- `full`: all of the above in one run
+
+Example:
+
+```bash
+ros2 run bcr_arm_rx150 rx150_target_test_suite --suite smoke
+ros2 run bcr_arm_rx150 rx150_target_test_suite --suite lateral
+ros2 run bcr_arm_rx150 rx150_target_test_suite --suite full --auto --pause-sec 5.0
+```
+
+Or send a one-off Cartesian target directly through the custom solver:
+
+```bash
+ros2 run bcr_arm_rx150 rx150_dls_ik_executor --x 0.20 --y 0.00 --z 0.16
+```
+
+## RX-150 Gazebo Sim Workflow
+
+Launch the Interbotix RX-150 Gazebo Classic sim from this repo:
+
+```bash
+cd ~/openRobotics/bcr_arm
+source /opt/ros/humble/setup.bash
+source install/setup.bash
+ros2 launch bcr_arm_rx150 rx150_gz_classic.launch.py
+```
+
+Useful variants:
+
+```bash
+ros2 launch bcr_arm_rx150 rx150_gz_classic.launch.py use_rviz:=false
+ros2 launch bcr_arm_rx150 rx150_gz_classic.launch.py paused:=true
+```
+
+If you want MoveIt on top of RX-150 Gazebo sim, launch the existing wrapper with
+`hardware_type:=gz_classic`:
+
+```bash
+ros2 launch bcr_arm_rx150 rx150_moveit_interface.launch.py hardware_type:=gz_classic
+```
+
+This sim entry point is a thin wrapper around the vendored Interbotix RX-150 sim stack in `interbotix`, so the RX-150 workflow remains locally launchable from `bcr_arm`.
+
+## BCR Arm 7-DOF Gazebo Workflow
 
 Open a separate terminal for each step below.
 
@@ -135,7 +372,7 @@ source ~/openRobotics/bcr_arm/install/setup.bash
 ros2 run bcr_arm_gazebo cartesian_target_test_suite.py
 ```
 
-## What Each Custom Node Does
+## What Each Custom BCR Gazebo Node Does
 
 ### `setup_arm_pose.py`
 
