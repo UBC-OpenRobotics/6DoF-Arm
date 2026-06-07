@@ -3,7 +3,7 @@
 
   <xacro:macro name="depth_camera" params="prefix parent_link namespace:=bcr_arm">
 
-    <!-- Camera Mount and Link -->
+    <!-- Camera Mount and Link; TODO: Hand eye calibration-->
     <joint name="${prefix}camera_mount_joint" type="fixed">
       <parent link="${parent_link}"/>
       <child link="${prefix}camera_base_link"/>
