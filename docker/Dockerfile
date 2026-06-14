@@ -30,7 +30,7 @@ RUN apt-get update && apt-get install -y \
 
 # Python dependencies (CPU-only for M1 Docker)
 RUN pip3 install --no-cache-dir \
-    ultralytics==8.1.0 \
+    ultralytics==8.4.67 \
     opencv-python-headless \
     "numpy<2"
 

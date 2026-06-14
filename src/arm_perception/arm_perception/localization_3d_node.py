@@ -26,9 +26,11 @@ class Localization3DNode(Node):
         self.declare_parameter('marker_topic', '/perception/markers')
         self.declare_parameter('depth_scale', 0.001)  # RealSense default: mm to meters
 
+        #input topics
         det_topic = self.get_parameter('detection_topic').value
         depth_topic = self.get_parameter('depth_topic').value
         info_topic = self.get_parameter('camera_info_topic').value
+
         output_topic = self.get_parameter('output_topic').value
         marker_topic = self.get_parameter('marker_topic').value
         self._depth_scale = self.get_parameter('depth_scale').value
@@ -40,6 +42,7 @@ class Localization3DNode(Node):
         self._cy = 0.0
         self._intrinsics_received = False
 
+        # Subscribe
         # Subscribe to camera info
         self.create_subscription(CameraInfo, info_topic, self._info_callback, 1)
 
@@ -47,16 +50,17 @@ class Localization3DNode(Node):
         det_sub = message_filters.Subscriber(self, DetectedObjectArray, det_topic)
         depth_sub = message_filters.Subscriber(self, Image, depth_topic)
 
+        # synchronize detection and depth messages based on their timestamps (allowing a small time difference of slop seconds)
         self._sync = message_filters.ApproximateTimeSynchronizer(
             [det_sub, depth_sub],
             queue_size=10,
             slop=0.1,
         )
-        self._sync.registerCallback(self._sync_callback)
+        self._sync.registerCallback(self._sync_callback) # register the callback to be called once synchronized messages are received
 
         # Publishers
-        self._det3d_pub = self.create_publisher(DetectedObjectArray, output_topic, 10)
-        self._marker_pub = self.create_publisher(MarkerArray, marker_topic, 10)
+        self._det3d_pub = self.create_publisher(DetectedObjectArray, output_topic, 10) #publish 3d detections (rgb detection + depth)
+        self._marker_pub = self.create_publisher(MarkerArray, marker_topic, 10) #publish RViz markers for visualization
 
         self.get_logger().info('3D localization node started')
 
@@ -91,9 +95,10 @@ class Localization3DNode(Node):
 
         # Project each detection to 3D
         output = DetectedObjectArray()
-        output.header = det_msg.header
+        output.header = det_msg.header #already synchronized with depth_msg
         markers = MarkerArray()
 
+        # Loop through detections (det) and compute 3D position for each
         for i, det in enumerate(det_msg.objects):
             # Center of bounding box
             cx_px = (det.bbox_2d[0] + det.bbox_2d[2]) // 2
@@ -103,8 +108,8 @@ class Localization3DNode(Node):
             cx_px = max(0, min(cx_px, depth_msg.width - 1))
             cy_px = max(0, min(cy_px, depth_msg.height - 1))
 
-            # Read depth at center (average a small patch for robustness)
-            patch_size = 5
+            # Read depth at center (take the median of a small patch for robustness)
+            patch_size = 5 # in pixels
             y_min = max(0, cy_px - patch_size)
             y_max = min(depth_msg.height, cy_px + patch_size + 1)
             x_min = max(0, cx_px - patch_size)
@@ -113,12 +118,13 @@ class Localization3DNode(Node):
             depth_patch = depth_array[y_min:y_max, x_min:x_max]
             valid_depths = depth_patch[depth_patch > 0]
 
+            # check if we have any valid depth measurements in the patch
             if len(valid_depths) == 0:
                 continue
 
             depth_val = float(np.median(valid_depths))
 
-            # Convert to meters
+            # Convert to meters, depth_val is in millimeters if dtype is uint16, in meters if dtype is float32
             if dtype == np.uint16:
                 z = depth_val * self._depth_scale
             else:

@@ -12,6 +12,7 @@
   <depend>rclpy</depend>
   <depend>sensor_msgs</depend>
   <depend>cv_bridge</depend>
+  <depend>cv2</depend>
   <depend>image_transport</depend>
   <depend>arm_interfaces</depend>
   <depend>visualization_msgs</depend>

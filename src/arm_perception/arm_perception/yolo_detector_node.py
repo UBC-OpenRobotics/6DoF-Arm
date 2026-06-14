@@ -1,6 +1,6 @@
 """YOLOv8 object detection node.
 
-Subscribes to RGB images, runs YOLO inference, publishes DetectedObjectArray.
+Subscribes to preprocessed color images, runs YOLO inference, publishes DetectedObjectArray.
 """
 
 import rclpy
@@ -29,9 +29,9 @@ class YOLODetectorNode(Node):
         input_topic = self.get_parameter('input_topic').value
         output_topic = self.get_parameter('output_topic').value
 
-        self._bridge = CvBridge()
-        self._model = None
-        self._latest_frame = None
+        self._bridge = CvBridge() #create a CvBridge instance for converting ROS images to OpenCV format
+        self._model = None #to be loaded
+        self._latest_frame = None #to be populated
 
         # Load YOLO model
         try:
@@ -51,7 +51,7 @@ class YOLODetectorNode(Node):
         self.create_subscription(Image, input_topic, self._image_callback, 1)
         self._det_pub = self.create_publisher(DetectedObjectArray, output_topic, 10)
 
-        # Service for one-shot detection
+        # Service for one-shot detection / detecting an object using only a single frame
         self.create_service(
             DetectObjects,
             'detect_objects',
@@ -61,13 +61,15 @@ class YOLODetectorNode(Node):
         self.get_logger().info('YOLO detector node started')
 
     def _image_callback(self, msg: Image):
+        # check if YOLO model is laoded
         if self._model is None:
             return
 
+        # Convert ROS Image to OpenCV format and store the latest frame for service use
         frame = self._bridge.imgmsg_to_cv2(msg, desired_encoding='bgr8')
         self._latest_frame = frame
 
-        detections = self._run_detection(frame)
+        detections = self._run_detection(frame) # returns a list of DetectedObject messages
 
         det_array = DetectedObjectArray()
         det_array.header = msg.header
@@ -75,7 +77,7 @@ class YOLODetectorNode(Node):
         self._det_pub.publish(det_array)
 
     def _run_detection(self, frame):
-        """Run YOLO inference on a single frame."""
+        """Run YOLO inference on a single frame (in OpenCV format)."""
         results = self._model.predict(
             frame,
             conf=self._conf_thresh,
@@ -83,7 +85,7 @@ class YOLODetectorNode(Node):
             verbose=False,
         )
 
-        detections = []
+        detections = [] # will be populated with DetectedObject messages to return
         for result in results:
             boxes = result.boxes
             if boxes is None:
@@ -94,15 +96,16 @@ class YOLODetectorNode(Node):
                 det.confidence = float(boxes.conf[i])
 
                 xyxy = boxes.xyxy[i].cpu().numpy().astype(int)
-                det.bbox_2d = [int(xyxy[0]), int(xyxy[1]), int(xyxy[2]), int(xyxy[3])]
+                det.bbox_2d = [int(xyxy[0]), int(xyxy[1]), int(xyxy[2]), int(xyxy[3])] # [left, top, right, bottom]
 
-                # position_3d left as zeros - filled by localization_3d_node
+                # position_3d left as zeros - will be filled by localization_3d_node
                 detections.append(det)
 
         return detections
 
     def _detect_objects_callback(self, request, response):
         """Service handler for one-shot detection."""
+        # if we have a latest frame and the model is loaded, run detection
         if self._latest_frame is not None and self._model is not None:
             response.objects = self._run_detection(self._latest_frame)
         else:

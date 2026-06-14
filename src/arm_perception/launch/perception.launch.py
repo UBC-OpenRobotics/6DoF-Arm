@@ -43,7 +43,7 @@ def generate_launch_description():
             condition=IfCondition(LaunchConfiguration('enable_camera')),
         ),
 
-        # # RealSense health monitor --> commented out for now because we can't have two nodes using the realsense camera
+        # # RealSense health monitor --> commented out for now it's causing conflict with the realsense driver
         # Node(
         #     package='arm_perception',
         #     executable='realsense_node',
@@ -51,6 +51,18 @@ def generate_launch_description():
         #     parameters=[realsense_config],
         #     output='screen',
         # ),
+
+        # Color preprocessing
+        Node(
+            package='arm_perception',
+            executable='color_preprocessing_node',
+            name='color_preprocessing_node',
+            parameters=[{
+                'filter': 'none', # options: none, bilateral, median, gaussian
+                'light_processing': 'none', # options: none, clahe
+            }],
+            output='screen',
+        ),
 
         # YOLO detector
         Node(
