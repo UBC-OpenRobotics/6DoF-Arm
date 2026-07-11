@@ -10,6 +10,7 @@ def generate_launch_description():
         DeclareLaunchArgument('robot_name', default_value='rx150'),
         DeclareLaunchArgument('use_rviz', default_value='true'),
         DeclareLaunchArgument('use_gazebo_gui', default_value='true'),
+        DeclareLaunchArgument('external_urdf_loc', default_value=''),
         DeclareLaunchArgument(
             'world_filepath',
             default_value=PathJoinSubstitution([
@@ -35,6 +36,7 @@ def generate_launch_description():
                 'robot_name': LaunchConfiguration('robot_name'),
                 'use_rviz': LaunchConfiguration('use_rviz'),
                 'use_gazebo_gui': LaunchConfiguration('use_gazebo_gui'),
+                'external_urdf_loc': LaunchConfiguration('external_urdf_loc'),
                 'world_filepath': LaunchConfiguration('world_filepath'),
                 'paused': LaunchConfiguration('paused'),
                 'verbose': LaunchConfiguration('verbose'),
