@@ -1,0 +1,70 @@
+<?xml version="1.0"?>
+<robot xmlns:xacro="http://www.ros.org/wiki/xacro">
+
+  <joint name="$(arg robot_name)_gripper_camera_mount" type="fixed">
+    <parent link="$(arg robot_name)/ee_gripper_link"/>
+    <child link="$(arg robot_name)/gripper_camera_link"/>
+    <origin xyz="0.03 0.0 0.015" rpy="0 0 0"/>
+  </joint>
+
+  <link name="$(arg robot_name)/gripper_camera_link">
+    <visual>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <geometry>
+        <box size="0.03 0.09 0.03"/>
+      </geometry>
+      <material name="interbotix_black"/>
+    </visual>
+    <collision>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <geometry>
+        <box size="0.03 0.09 0.03"/>
+      </geometry>
+    </collision>
+    <inertial>
+      <mass value="0.05"/>
+      <inertia
+        ixx="0.00001"
+        iyy="0.00001"
+        izz="0.00001"
+        ixy="0.0"
+        ixz="0.0"
+        iyz="0.0"/>
+    </inertial>
+  </link>
+
+  <joint name="$(arg robot_name)_gripper_camera_optical_joint" type="fixed">
+    <parent link="$(arg robot_name)/gripper_camera_link"/>
+    <child link="$(arg robot_name)/gripper_camera_optical_link"/>
+    <origin xyz="0 0 0" rpy="${-pi/2} 0 ${-pi/2}"/>
+  </joint>
+
+  <link name="$(arg robot_name)/gripper_camera_optical_link"/>
+
+  <gazebo reference="$(arg robot_name)/gripper_camera_link">
+    <material>Gazebo/Red</material>
+
+    <sensor name="gripper_camera" type="depth">
+      <pose>0 0 0 0 0 0</pose>
+      <visualize>false</visualize>
+      <update_rate>5</update_rate>
+      <camera>
+        <horizontal_fov>1.089</horizontal_fov>
+        <image>
+          <width>320</width>
+          <height>240</height>
+          <format>R8G8B8</format>
+        </image>
+        <clip>
+          <near>0.05</near>
+          <far>3.0</far>
+        </clip>
+      </camera>
+      <plugin name="gripper_camera_controller" filename="libgazebo_ros_camera.so">
+        <camera_name>gripper_camera</camera_name>
+        <frame_name>$(arg robot_name)/gripper_camera_optical_link</frame_name>
+      </plugin>
+    </sensor>
+  </gazebo>
+
+</robot>

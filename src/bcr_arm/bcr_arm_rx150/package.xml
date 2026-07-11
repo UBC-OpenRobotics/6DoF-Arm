@@ -12,6 +12,7 @@
   <depend>interbotix_xs_msgs</depend>
   <depend>launch</depend>
   <depend>launch_ros</depend>
+  <depend>nav_msgs</depend>
   <depend>rclpy</depend>
   <depend>sensor_msgs</depend>
   <depend>trajectory_msgs</depend>
@@ -19,6 +20,7 @@
   <exec_depend>interbotix_xsarm_control</exec_depend>
   <exec_depend>interbotix_xsarm_sim</exec_depend>
   <exec_depend>interbotix_xsarm_moveit_interface</exec_depend>
+  <exec_depend>data_collector</exec_depend>
   <exec_depend>python3-numpy</exec_depend>
 
   <test_depend>ament_copyright</test_depend>
