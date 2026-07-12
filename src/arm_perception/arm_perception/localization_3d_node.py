@@ -20,8 +20,8 @@ class Localization3DNode(Node):
         super().__init__('localization_3d_node')
 
         self.declare_parameter('detection_topic', '/perception/detections')
-        self.declare_parameter('depth_topic', '/camera/aligned_depth_to_color/image_raw')
-        self.declare_parameter('camera_info_topic', '/camera/color/camera_info')
+        self.declare_parameter('depth_topic', '/camera/camera/aligned_depth_to_color/image_raw') #TODO: CHECK TOPIC
+        self.declare_parameter('camera_info_topic', '/camera/camera/color/camera_info') #TODO: CHECK TOPIC
         self.declare_parameter('output_topic', '/perception/detections_3d')
         self.declare_parameter('marker_topic', '/perception/markers')
         self.declare_parameter('depth_scale', 0.001)  # RealSense default: mm to meters
@@ -159,10 +159,14 @@ class Localization3DNode(Node):
             marker.header = det_msg.header
             marker.ns = 'detections'
             marker.id = i
-            marker.type = Marker.CUBE
+
+            #marker.type = Marker.CUBE
+            marker.type = marker.TEXT_VIEW_FACING #TODO: configure detection labels
             marker.action = Marker.ADD
+            marker.text = det.class_name
             marker.pose.position = Point(x=x, y=y, z=z)
-            marker.scale = Vector3(x=dim_x, y=dim_y, z=0.05)
+            #marker.scale = Vector3(x=dim_x, y=dim_y, z=0.05)
+            marker.scale.z = 0.1 # 10 cm letters?
             marker.color.r = 0.0
             marker.color.g = 1.0
             marker.color.b = 0.0

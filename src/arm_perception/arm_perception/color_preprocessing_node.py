@@ -16,7 +16,7 @@ class ColorPreprocessingNode(Node):
 
         self.declare_parameter('filter', 'none')
         self.declare_parameter('light_processing', 'none') 
-        self.declare_parameter('input_topic', '/camera/color/image_raw')
+        self.declare_parameter('input_topic', '/camera/camera/color/image_raw') #TODO: CHECK TOPIC
         self.declare_parameter('output_topic', '/perception/color_preprocessed')
 
         self.filter_type = self.get_parameter('filter').value

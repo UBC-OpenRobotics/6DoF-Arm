@@ -19,8 +19,8 @@ class YOLODetectorNode(Node):
         self.declare_parameter('model_path', 'yolov8n.pt')
         self.declare_parameter('confidence_threshold', 0.5)
         self.declare_parameter('nms_threshold', 0.45)
-        self.declare_parameter('device', 'cpu')
-        self.declare_parameter('input_topic', '/camera/color/image_raw')
+        self.declare_parameter('device', 'cpu') # TODO: consider gpu if available
+        self.declare_parameter('input_topic', '/camera/camera/color/image_raw') #TODO: CHECK TOPIC
         self.declare_parameter('output_topic', '/perception/detections')
 
         model_path = self.get_parameter('model_path').value

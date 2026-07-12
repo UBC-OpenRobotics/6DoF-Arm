@@ -34,6 +34,12 @@ RUN pip3 install --no-cache-dir \
     opencv-python-headless \
     "numpy<2"
 
+# RQT and common plugins for debugging and visualization in the dev stage
+RUN apt-get update && apt-get install -y \
+    ros-humble-rqt \
+    ros-humble-rqt-common-plugins \
+    && rm -rf /var/lib/apt/lists/*
+
 # Visualization tools
 FROM base AS viz
 RUN apt-get update && apt-get install -y \

@@ -37,7 +37,8 @@ def generate_launch_description():
             ]),
             launch_arguments={
                 'align_depth.enable': 'true',
-                'pointcloud.enable': 'false',
+                'pointcloud.enable': 'true',
+                'rosbag_filename': '/ros2_ws/bag_files/test1_uncompressed.bag',
                 'serial_no': LaunchConfiguration('camera_serial_no'),
             }.items(),
             condition=IfCondition(LaunchConfiguration('enable_camera')),
@@ -52,17 +53,17 @@ def generate_launch_description():
         #     output='screen',
         # ),
 
-        # Color preprocessing
-        Node(
-            package='arm_perception',
-            executable='color_preprocessing_node',
-            name='color_preprocessing_node',
-            parameters=[{
-                'filter': 'none', # options: none, bilateral, median, gaussian
-                'light_processing': 'none', # options: none, clahe
-            }],
-            output='screen',
-        ),
+        # # Color preprocessing
+        # Node(
+        #     package='arm_perception',
+        #     executable='color_preprocessing_node',
+        #     name='color_preprocessing_node',
+        #     parameters=[{
+        #         'filter': 'median', # options: none, bilateral, median, gaussian
+        #         'light_processing': 'none', # options: none, clahe
+        #     }],
+        #     output='screen',
+        # ),
 
         # YOLO detector
         Node(
@@ -83,4 +84,21 @@ def generate_launch_description():
             }],
             output='screen',
         ),
+
+        #RViz visualization
+        Node(
+            package='rviz2',
+            executable='rviz2',
+            name='rviz2',
+            arguments=['-d', os.path.join(pkg_dir, 'config', 'perception.rviz')],
+            output='screen',
+        ),
+
+        #Get 3D point action server
+        Node(
+            package='arm_perception',
+            executable='get_3d_point_action_node',
+            name='get_3d_point_action_node',
+            output='screen',
+        )
     ])

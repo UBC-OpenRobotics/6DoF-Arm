@@ -8,14 +8,10 @@ train: images/train
 val: images/val
 test: images/test
 
-nc: 9
+nc: 5
 names:
   0: cup
-  1: spoon
-  2: milk_carton
-  3: sugar_container
-  4: hot_water_tap
-  5: coffee_machine_button
-  6: coffee_pod
-  7: fill_marker
-  8: serve_marker
+  1: water_tap
+  2: fill_marker
+  3: serve_marker
+  4: bell

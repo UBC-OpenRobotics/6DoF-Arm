@@ -19,6 +19,7 @@ rosidl_generate_interfaces(${PROJECT_NAME}
   "srv/DetectObjects.srv"
   "srv/GetJointStates.srv"
   "action/ExecuteTask.action"
+  "action/Get3DPoint.action"
   DEPENDENCIES geometry_msgs std_msgs sensor_msgs
 )
 

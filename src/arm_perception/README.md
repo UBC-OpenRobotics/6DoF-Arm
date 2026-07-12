@@ -33,7 +33,7 @@
 
   ## Using WSL2
 
-  Can work on linux as a VM using WSL2
+  Can work on WSL2
 
   Make sure that WSL2 can see USB attachments (use USBIPD).
                                   
