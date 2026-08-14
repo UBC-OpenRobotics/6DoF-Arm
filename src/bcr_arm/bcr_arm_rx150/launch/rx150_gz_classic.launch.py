@@ -12,6 +12,14 @@ def generate_launch_description():
         DeclareLaunchArgument('use_gazebo_gui', default_value='true'),
         DeclareLaunchArgument('external_urdf_loc', default_value=''),
         DeclareLaunchArgument(
+            'rvizconfig',
+            default_value=PathJoinSubstitution([
+                FindPackageShare('interbotix_xsarm_sim'),
+                'rviz',
+                'xsarm_gz_classic.rviz',
+            ]),
+        ),
+        DeclareLaunchArgument(
             'world_filepath',
             default_value=PathJoinSubstitution([
                 FindPackageShare('interbotix_common_sim'),
@@ -37,6 +45,7 @@ def generate_launch_description():
                 'use_rviz': LaunchConfiguration('use_rviz'),
                 'use_gazebo_gui': LaunchConfiguration('use_gazebo_gui'),
                 'external_urdf_loc': LaunchConfiguration('external_urdf_loc'),
+                'rvizconfig': LaunchConfiguration('rvizconfig'),
                 'world_filepath': LaunchConfiguration('world_filepath'),
                 'paused': LaunchConfiguration('paused'),
                 'verbose': LaunchConfiguration('verbose'),

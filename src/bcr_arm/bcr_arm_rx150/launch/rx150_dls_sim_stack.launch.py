@@ -15,9 +15,9 @@ def generate_launch_description():
         DeclareLaunchArgument(
             'world_filepath',
             default_value=PathJoinSubstitution([
-                FindPackageShare('interbotix_common_sim'),
+                FindPackageShare('bcr_arm_rx150'),
                 'worlds',
-                'interbotix.world',
+                'rx150_obstacles.world',
             ]),
         ),
         DeclareLaunchArgument(
@@ -28,10 +28,19 @@ def generate_launch_description():
                 'rx150_gripper_depth_camera.urdf.xacro',
             ]),
         ),
+        DeclareLaunchArgument(
+            'rvizconfig',
+            default_value=PathJoinSubstitution([
+                FindPackageShare('bcr_arm_rx150'),
+                'rviz',
+                'rx150_dls_sim_stack.rviz',
+            ]),
+        ),
         DeclareLaunchArgument('use_scene_point_cloud', default_value='true'),
         DeclareLaunchArgument('scene_point_cloud_output_topic', default_value='/planning/live_point_cloud'),
         DeclareLaunchArgument('use_path_planner', default_value='true'),
         DeclareLaunchArgument('use_waypoint_executor', default_value='true'),
+        DeclareLaunchArgument('use_joint_waypoint_executor', default_value='true'),
         DeclareLaunchArgument('waypoint_target_mode', default_value='point'),
         DeclareLaunchArgument('planning_frame', default_value='rx150/base_link'),
         IncludeLaunchDescription(
@@ -47,6 +56,7 @@ def generate_launch_description():
                 'use_rviz': LaunchConfiguration('use_rviz'),
                 'use_gazebo_gui': LaunchConfiguration('use_gazebo_gui'),
                 'external_urdf_loc': LaunchConfiguration('external_urdf_loc'),
+                'rvizconfig': LaunchConfiguration('rvizconfig'),
                 'world_filepath': LaunchConfiguration('world_filepath'),
             }.items(),
         ),
@@ -65,6 +75,7 @@ def generate_launch_description():
                 'orientation_mode': 'exact',
                 'fallback_to_neutral_on_failure': False,
                 'position_tolerance': 0.015,
+                'joint_command_topic': '/rx150/joint_command',
             }],
         ),
         Node(
@@ -91,6 +102,11 @@ def generate_launch_description():
                 'joint_state_topic': '/rx150/joint_states',
                 'target_topic': '/cartesian_target',
                 'path_topic': '/planned_cartesian_path',
+                'grid_x_min': -0.45,
+                'grid_x_max': 0.45,
+                'grid_y_min': -0.45,
+                'grid_y_max': 0.45,
+                'obstacle_inflation_cells': 3,
             }],
         ),
         Node(
@@ -105,6 +121,17 @@ def generate_launch_description():
                 'ik_target_topic': '/ik_waypoint_target',
                 'ik_target_pose_topic': '/ik_waypoint_target_pose',
                 'waypoint_target_mode': LaunchConfiguration('waypoint_target_mode'),
+            }],
+        ),
+        Node(
+            package='bcr_arm_rx150',
+            executable='rx150_joint_waypoint_executor',
+            output='screen',
+            condition=IfCondition(LaunchConfiguration('use_joint_waypoint_executor')),
+            parameters=[{
+                'joint_state_topic': '/rx150/joint_states',
+                'joint_path_topic': '/planned_joint_path',
+                'joint_command_topic': '/rx150/joint_command',
             }],
         ),
     ])

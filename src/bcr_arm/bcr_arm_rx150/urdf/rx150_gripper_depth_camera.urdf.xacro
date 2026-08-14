@@ -1,10 +1,12 @@
 <?xml version="1.0"?>
 <robot xmlns:xacro="http://www.ros.org/wiki/xacro">
 
+  <!-- Camera mounted on top of the wrist_rotate servo (the servo closest to the
+       gripper)-->
   <joint name="$(arg robot_name)_gripper_camera_mount" type="fixed">
-    <parent link="$(arg robot_name)/ee_gripper_link"/>
+    <parent link="$(arg robot_name)/gripper_link"/>
     <child link="$(arg robot_name)/gripper_camera_link"/>
-    <origin xyz="0.03 0.0 0.015" rpy="0 0 0"/>
+    <origin xyz="0.0 0.0 0.065" rpy="0 0 0"/>
   </joint>
 
   <link name="$(arg robot_name)/gripper_camera_link">
@@ -56,13 +58,15 @@
           <format>R8G8B8</format>
         </image>
         <clip>
-          <near>0.05</near>
+          <near>0.02</near>
           <far>3.0</far>
         </clip>
       </camera>
       <plugin name="gripper_camera_controller" filename="libgazebo_ros_camera.so">
         <camera_name>gripper_camera</camera_name>
         <frame_name>$(arg robot_name)/gripper_camera_optical_link</frame_name>
+        <min_depth>0.02</min_depth>
+        <max_depth>3.0</max_depth>
       </plugin>
     </sensor>
   </gazebo>

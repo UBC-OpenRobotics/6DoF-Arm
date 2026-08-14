@@ -46,6 +46,17 @@ def _suite_catalog() -> dict[str, list[TargetCase]]:
             TargetCase('F5', 'right_point', 0.18, -0.08, 0.14, note='Moderate right offset'),
             TargetCase('F6', 'forward_pose', 0.20, 0.00, 0.16, forward_quaternion, 'Exact pose test'),
         ],
+        # Whole-body collision regression suite.
+        'collision': [
+
+            TargetCase('C1', 'reported_bug_target', 0.32, 0.00, 0.16,
+                       note='Regression: elbow used to hit obstacle_box_front_left'),
+            TargetCase('C2', 'into_obstacle', 0.34, 0.14, 0.20,
+                       note='Directly at the box; expect reroute or no-path'),
+
+            TargetCase('C3', 'clear_space_control', 0.20, -0.15, 0.16,
+                       note='Unobstructed; must still plan and execute'),
+        ],
     }
 
 
