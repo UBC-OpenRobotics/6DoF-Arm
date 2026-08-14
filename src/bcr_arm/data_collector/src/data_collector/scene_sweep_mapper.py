@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import time
 
+from bcr_arm_common import rx150_kinematics
 import numpy as np
 import rclpy
 from geometry_msgs.msg import PointStamped, PoseStamped
@@ -15,58 +16,20 @@ from sensor_msgs_py import point_cloud2
 from std_msgs.msg import Header
 
 
-# Waist angles for the sweep (radians). ±135° covers the full workspace arc.
-# Shoulder/elbow/wrist are sampled from the arm's starting joint state at runtime
-# so the scan uses whatever orientation the arm is already in.
-SCAN_WAIST_ANGLES = [-2.356, -1.571, -0.785, 0.0, 0.785, 1.571, 2.356]
+# Waist angles for the sweep (radians), 45° apart from -177° to +135°.
+# With the camera's ~62° FOV this covers the full 360° around the base
+# (the gap between +135° and -177° through the back is ~47°, same as the others).
+SCAN_WAIST_ANGLES = [-3.10, -2.356, -1.571, -0.785, 0.0, 0.785, 1.571, 2.356]
 
-JOINT_NAMES = ['waist', 'shoulder', 'elbow', 'wrist_angle', 'wrist_rotate']
+# Tucked scan posture (shoulder, elbow, wrist_angle, wrist_rotate):
+# shoulder leans back, elbow folds forward near its limit so the wrist sits
+# almost directly above the base, keeping the camera close in while scanning.
+# Net Y rotation = -1.0 + 1.6 - 0.6 = 0 → camera level with the floor.
+SCAN_TUCKED_JOINTS = [-1.0, 1.6, -0.6, 0.0]
 
-# RX-150 kinematic parameters (matches rx150_point_cloud_path_planner)
-_FK_ORIGINS = [
-    np.array([0.0,   0.0, 0.06566], dtype=float),
-    np.array([0.0,   0.0, 0.03891], dtype=float),
-    np.array([0.05,  0.0, 0.15],    dtype=float),
-    np.array([0.15,  0.0, 0.0],     dtype=float),
-    np.array([0.065, 0.0, 0.0],     dtype=float),
-]
-_FK_AXES = [
-    np.array([0.0, 0.0, 1.0], dtype=float),
-    np.array([0.0, 1.0, 0.0], dtype=float),
-    np.array([0.0, 1.0, 0.0], dtype=float),
-    np.array([0.0, 1.0, 0.0], dtype=float),
-    np.array([1.0, 0.0, 0.0], dtype=float),
-]
-_FK_TOOL_OFFSET = np.array([0.108, 0.0, 0.0], dtype=float)
-
-
-def _rotation_matrix(axis: np.ndarray, angle: float) -> np.ndarray:
-    axis = axis / np.linalg.norm(axis)
-    x, y, z = axis
-    c, s = np.cos(angle), np.sin(angle)
-    t = 1.0 - c
-    return np.array([
-        [t*x*x + c,   t*x*y - z*s, t*x*z + y*s, 0.0],
-        [t*x*y + z*s, t*y*y + c,   t*y*z - x*s, 0.0],
-        [t*x*z - y*s, t*y*z + x*s, t*z*z + c,   0.0],
-        [0.0,         0.0,         0.0,          1.0],
-    ], dtype=float)
-
-
-def _translation_matrix(offset: np.ndarray) -> np.ndarray:
-    m = np.eye(4, dtype=float)
-    m[:3, 3] = offset
-    return m
-
-
-def forward_kinematics(q: list[float]) -> tuple[np.ndarray, np.ndarray]:
-    """Return (xyz, rotation_matrix 3x3) of the end-effector in base frame."""
-    transform = np.eye(4, dtype=float)
-    for origin, axis, angle in zip(_FK_ORIGINS, _FK_AXES, q):
-        transform = transform @ _translation_matrix(origin)
-        transform = transform @ _rotation_matrix(axis, angle)
-    transform = transform @ _translation_matrix(_FK_TOOL_OFFSET)
-    return transform[:3, 3].copy(), transform[:3, :3].copy()
+# The FK chain, joint names, and capsule collision model live in the shared
+# bcr_arm_common.rx150_kinematics module (single source of truth). The sweep uses
+# rx150_kinematics.forward_kinematics + JOINT_NAMES below.
 
 
 def rotation_to_quaternion(R: np.ndarray) -> tuple[float, float, float, float]:
@@ -109,8 +72,8 @@ class SceneSweepMapper(Node):
         self.declare_parameter('joint_state_topic', '/rx150/joint_states')
         self.declare_parameter('world_frame',      'rx150/base_link')
         self.declare_parameter('frame_id',         'rx150/base_link')
-        self.declare_parameter('settle_sec',       5.0)
-        self.declare_parameter('sample_sec',       2.0)
+        self.declare_parameter('settle_sec',       3.0)
+        self.declare_parameter('sample_sec',       1.0)
         self.declare_parameter('command_publish_count', 5)
         self.declare_parameter('voxel_size',       0.01)
         self.declare_parameter('x_min',  -1.60)
@@ -120,7 +83,7 @@ class SceneSweepMapper(Node):
         self.declare_parameter('z_min',  -0.05)
         self.declare_parameter('z_max',   0.50)
         self.declare_parameter('max_input_range', 1.50)
-        self.declare_parameter('return_to_home',  False)
+        self.declare_parameter('return_to_home',  True)
 
         self._input_topic    = str(self.get_parameter('input_topic').value)
         self._output_topic   = str(self.get_parameter('output_topic').value)
@@ -143,6 +106,7 @@ class SceneSweepMapper(Node):
         self._latest_points: np.ndarray | None = None   # raw, bounds applied only in _build_map
         self._accumulated_points: list[np.ndarray] = []
         self._cloud_received: bool = False
+        self._new_frame: bool = False
         self._current_q: np.ndarray | None = None
         self._cb_count: int = 0
 
@@ -163,9 +127,9 @@ class SceneSweepMapper(Node):
     # ------------------------------------------------------------------
     def _joint_state_cb(self, msg: JointState) -> None:
         positions = dict(zip(msg.name, msg.position))
-        if all(name in positions for name in JOINT_NAMES):
+        if all(name in positions for name in rx150_kinematics.JOINT_NAMES):
             self._current_q = np.array(
-                [positions[name] for name in JOINT_NAMES], dtype=np.float64
+                [positions[name] for name in rx150_kinematics.JOINT_NAMES], dtype=np.float64
             )
 
     def _point_cloud_cb(self, msg: PointCloud2) -> None:
@@ -194,6 +158,7 @@ class SceneSweepMapper(Node):
                 return
         # Store raw range-filtered points; bounds cropping happens in _build_map
         self._latest_points = points
+        self._new_frame = True
         if self._cb_count % 20 == 1:
             self.get_logger().info(
                 'Cloud cb=%d  pts=%d  x[%.2f,%.2f] y[%.2f,%.2f] z[%.2f,%.2f]'
@@ -217,18 +182,23 @@ class SceneSweepMapper(Node):
             )
             return 1
 
-        # Lock the arm's current shoulder/elbow/wrist as the fixed scan orientation.
-        # Only the waist (joint 0) changes per pose.
-        q0 = self._current_q
+        # Fold into the tucked scan posture at the current waist angle first,
+        # then sweep only the waist. Doing the fold as its own move keeps the
+        # DLS solver on the tucked solution branch for the whole sweep.
+        tucked = SCAN_TUCKED_JOINTS
+        self.get_logger().info(
+            'Tucking arm for scan: shoulder=%.2f elbow=%.2f wrist=%.2f'
+            % (tucked[0], tucked[1], tucked[2])
+        )
+        current_waist = float(self._current_q[0])
+        self._send_pose([current_waist] + list(tucked))
+        if not self._spin_for(self._settle_sec):
+            return 130
+
         scan_poses = [
-            ('scan_%+.0fdeg' % np.degrees(w),
-             [float(w), float(q0[1]), float(q0[2]), float(q0[3]), float(q0[4])])
+            ('scan_%+.0fdeg' % np.degrees(w), [float(w)] + list(tucked))
             for w in SCAN_WAIST_ANGLES
         ]
-        self.get_logger().info(
-            'Sweep orientation locked from starting joints: '
-            'shoulder=%.3f elbow=%.3f wrist=%.3f' % (q0[1], q0[2], q0[3])
-        )
 
         for pose_name, joints in scan_poses:
             self.get_logger().info("Moving to sweep pose '%s'" % pose_name)
@@ -254,14 +224,15 @@ class SceneSweepMapper(Node):
 
         self._publish_map(merged)
         self.get_logger().info(
-            'Published map with %d points on %s — node staying alive, Ctrl+C when done.'
+            'Published map with %d points on %s — republishing every 2 s, Ctrl+C when done.'
             % (merged.shape[0], self._output_topic)
         )
-        # Keep the node alive so the latched publisher can deliver to RViz subscribers
-        # that connect after the map is published.
+        # Republish periodically so any subscriber (RViz, planner) receives the map
+        # regardless of its QoS durability setting.
         try:
             while rclpy.ok():
-                self._executor.spin_once(timeout_sec=1.0)
+                self._spin_for(2.0)
+                self._publish_map(merged)
         except KeyboardInterrupt:
             pass
         return 0
@@ -269,7 +240,7 @@ class SceneSweepMapper(Node):
     # ------------------------------------------------------------------
     def _send_pose(self, joints: list[float]) -> None:
         """Compute full FK pose and send to the IK executor as PoseStamped."""
-        xyz, rot = forward_kinematics(joints)
+        xyz, rot = rx150_kinematics.forward_kinematics(np.asarray(joints, dtype=float))
         qx, qy, qz, qw = rotation_to_quaternion(rot)
         self.get_logger().info(
             'FK → xyz=[%.3f, %.3f, %.3f], publishing to %s'
@@ -293,12 +264,20 @@ class SceneSweepMapper(Node):
         deadline = time.monotonic() + self._sample_sec
         frames = 0
         last_pts = None
+        self._new_frame = False
         while time.monotonic() < deadline:
             if not rclpy.ok():
                 return False
             self._executor.spin_once(timeout_sec=0.1)
+            if not self._new_frame:
+                continue
+            self._new_frame = False
             if self._latest_points is not None and self._latest_points.size > 0:
-                self._accumulated_points.append(self._latest_points.copy())
+                # Crop per-frame so accumulation stays small
+                cropped = self._crop_points(self._latest_points)
+                if cropped.size == 0:
+                    continue
+                self._accumulated_points.append(cropped.copy())
                 last_pts = self._latest_points
                 frames += 1
         if frames == 0:

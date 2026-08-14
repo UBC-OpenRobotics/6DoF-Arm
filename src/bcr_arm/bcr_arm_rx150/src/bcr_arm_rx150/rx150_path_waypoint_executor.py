@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from typing import List, Optional
 
+from bcr_arm_common import rx150_kinematics
 from geometry_msgs.msg import PointStamped, PoseStamped
 from nav_msgs.msg import Path
 import numpy as np
@@ -31,6 +32,7 @@ class Rx150PathWaypointExecutor(Node):
         self.declare_parameter('verbose_waypoint_logging', True)
         self.declare_parameter('stuck_waypoint_warn_sec', 2.0)
         self.declare_parameter('stuck_waypoint_log_period_sec', 2.0)
+        self.declare_parameter('stuck_waypoint_abort_sec', 12.0)
 
         self._world_frame = str(self.get_parameter('world_frame').value)
         self._joint_state_topic = str(self.get_parameter('joint_state_topic').value)
@@ -64,22 +66,10 @@ class Rx150PathWaypointExecutor(Node):
         self._stuck_waypoint_log_period_sec = max(
             0.1, float(self.get_parameter('stuck_waypoint_log_period_sec').value)
         )
-        self._joint_names = ['waist', 'shoulder', 'elbow', 'wrist_angle', 'wrist_rotate']
-        self._origins = [
-            np.array([0.0, 0.0, 0.06566], dtype=float),
-            np.array([0.0, 0.0, 0.03891], dtype=float),
-            np.array([0.05, 0.0, 0.15], dtype=float),
-            np.array([0.15, 0.0, 0.0], dtype=float),
-            np.array([0.065, 0.0, 0.0], dtype=float),
-        ]
-        self._axes = [
-            np.array([0.0, 0.0, 1.0], dtype=float),
-            np.array([0.0, 1.0, 0.0], dtype=float),
-            np.array([0.0, 1.0, 0.0], dtype=float),
-            np.array([0.0, 1.0, 0.0], dtype=float),
-            np.array([1.0, 0.0, 0.0], dtype=float),
-        ]
-        self._tool_offset = np.array([0.108, 0.0, 0.0], dtype=float)
+        self._stuck_waypoint_abort_sec = max(
+            0.0, float(self.get_parameter('stuck_waypoint_abort_sec').value)
+        )
+        self._joint_names = list(rx150_kinematics.JOINT_NAMES)
 
         self._current_q: Optional[np.ndarray] = None
         self._active_waypoints: List[np.ndarray] = []
@@ -185,6 +175,29 @@ class Rx150PathWaypointExecutor(Node):
         self._maybe_log_waypoint_status(target_xyz)
         self._maybe_log_stuck_waypoint(target_xyz, distance_to_target)
 
+        if self._waypoint_abort_due(distance_to_target):
+            self.get_logger().error(
+                'Aborting path: waypoint %d/%d [%.3f, %.3f, %.3f] not reached '
+                'after %.1f s (best distance %.4f m). It is likely beyond the '
+                "arm's reach; discarding the rest of the path."
+                % (
+                    self._current_waypoint_index + 1,
+                    len(self._active_waypoints),
+                    target_xyz[0],
+                    target_xyz[1],
+                    target_xyz[2],
+                    self._clock_now_sec() - self._active_waypoint_publish_time_sec,
+                    distance_to_target,
+                )
+            )
+            self._active_waypoints = []
+            self._last_published_index = -1
+            self._last_logged_waypoint_index = -1
+            self._active_waypoint_publish_time_sec = None
+            self._last_stuck_log_time_sec = None
+            self._publish_remaining_path()
+            return
+
         if distance_to_target <= self._waypoint_reached_tolerance:
             self._current_waypoint_index += 1
             if self._current_waypoint_index >= len(self._active_waypoints):
@@ -263,6 +276,16 @@ class Rx150PathWaypointExecutor(Node):
             )
         )
 
+    def _waypoint_abort_due(self, distance_to_target: float) -> bool:
+        if self._stuck_waypoint_abort_sec <= 0.0:
+            return False
+        if self._active_waypoint_publish_time_sec is None:
+            return False
+        if distance_to_target <= self._waypoint_reached_tolerance:
+            return False
+        elapsed_sec = self._clock_now_sec() - self._active_waypoint_publish_time_sec
+        return elapsed_sec >= self._stuck_waypoint_abort_sec
+
     def _maybe_log_stuck_waypoint(
         self,
         target_xyz: np.ndarray,
@@ -318,54 +341,11 @@ class Rx150PathWaypointExecutor(Node):
         return xyz
 
     def _forward_kinematics_pose(self, q: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
-        transform = np.eye(4)
-        for origin, axis, joint_angle in zip(self._origins, self._axes, q):
-            transform = transform @ self._translation(origin)
-            transform = transform @ self._rotation(axis, joint_angle)
-        transform = transform @ self._translation(self._tool_offset)
-        return transform[:3, 3].copy(), transform[:3, :3].copy()
+        return rx150_kinematics.forward_kinematics(q)
 
     def _clock_now_sec(self) -> float:
         now_msg = self.get_clock().now().to_msg()
         return float(now_msg.sec) + (float(now_msg.nanosec) * 1e-9)
-
-    @staticmethod
-    def _translation(offset: np.ndarray) -> np.ndarray:
-        transform = np.eye(4)
-        transform[:3, 3] = offset
-        return transform
-
-    @staticmethod
-    def _rotation(axis: np.ndarray, angle: float) -> np.ndarray:
-        axis = axis / np.linalg.norm(axis)
-        x_axis, y_axis, z_axis = axis
-        cos_theta = np.cos(angle)
-        sin_theta = np.sin(angle)
-        one_minus_cos = 1.0 - cos_theta
-        return np.array(
-            [
-                [
-                    cos_theta + x_axis * x_axis * one_minus_cos,
-                    x_axis * y_axis * one_minus_cos - z_axis * sin_theta,
-                    x_axis * z_axis * one_minus_cos + y_axis * sin_theta,
-                    0.0,
-                ],
-                [
-                    y_axis * x_axis * one_minus_cos + z_axis * sin_theta,
-                    cos_theta + y_axis * y_axis * one_minus_cos,
-                    y_axis * z_axis * one_minus_cos - x_axis * sin_theta,
-                    0.0,
-                ],
-                [
-                    z_axis * x_axis * one_minus_cos - y_axis * sin_theta,
-                    z_axis * y_axis * one_minus_cos + x_axis * sin_theta,
-                    cos_theta + z_axis * z_axis * one_minus_cos,
-                    0.0,
-                ],
-                [0.0, 0.0, 0.0, 1.0],
-            ],
-            dtype=float,
-        )
 
     @staticmethod
     def _rotation_matrix_to_quaternion(rotation: np.ndarray) -> Optional[np.ndarray]:

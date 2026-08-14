@@ -3,6 +3,8 @@
 import argparse
 from typing import Optional
 
+from bcr_arm_common import rx150_kinematics
+from bcr_arm_rx150.rx150_dls_solver import DlsSolver, DlsSolverConfig
 from geometry_msgs.msg import PointStamped, PoseStamped
 from interbotix_xs_msgs.msg import JointGroupCommand
 import numpy as np
@@ -54,6 +56,8 @@ class Rx150DlsIkExecutor(Node):
         self.declare_parameter('fallback_to_neutral_on_failure', True)
         self.declare_parameter('retry_after_neutral_attempts', 1)
         self.declare_parameter('neutral_retry_joint_tolerance', 0.08)
+        self.declare_parameter('joint_command_topic', '/rx150/joint_command')
+        self.declare_parameter('joint_command_time_sec', 0.6)
 
         self._world_frame = self.get_parameter('world_frame').value
         self._target_topic = self.get_parameter('target_topic').value
@@ -124,28 +128,7 @@ class Rx150DlsIkExecutor(Node):
             np.array([1.0, 0.0, 0.0], dtype=float),
         )
 
-        self._joint_names = ['waist', 'shoulder', 'elbow', 'wrist_angle', 'wrist_rotate']
-        pi_epsilon = 1e-5
-        self._joint_limits_lower = np.array(
-            [
-                -np.pi + pi_epsilon,
-                np.deg2rad(-106.0),
-                np.deg2rad(-102.0),
-                np.deg2rad(-100.0),
-                -np.pi + pi_epsilon,
-            ],
-            dtype=float,
-        )
-        self._joint_limits_upper = np.array(
-            [
-                np.pi - pi_epsilon,
-                np.deg2rad(100.0),
-                np.deg2rad(95.0),
-                np.deg2rad(123.0),
-                np.pi - pi_epsilon,
-            ],
-            dtype=float,
-        )
+        self._joint_names = list(rx150_kinematics.JOINT_NAMES)
         self._neutral_carry_joint_positions = np.array(
             [0.0, -0.35, 0.75, -0.40, 0.0],
             dtype=float,
@@ -162,21 +145,11 @@ class Rx150DlsIkExecutor(Node):
         self._neutral_retry_joint_tolerance = float(
             self.get_parameter('neutral_retry_joint_tolerance').value
         )
-
-        self._origins = [
-            np.array([0.0, 0.0, 0.06566], dtype=float),
-            np.array([0.0, 0.0, 0.03891], dtype=float),
-            np.array([0.05, 0.0, 0.15], dtype=float),
-            np.array([0.15, 0.0, 0.0], dtype=float),
-            np.array([0.065, 0.0, 0.0], dtype=float),
-        ]
-        self._axes = [
-            np.array([0.0, 0.0, 1.0], dtype=float),
-            np.array([0.0, 1.0, 0.0], dtype=float),
-            np.array([0.0, 1.0, 0.0], dtype=float),
-            np.array([0.0, 1.0, 0.0], dtype=float),
-            np.array([1.0, 0.0, 0.0], dtype=float),
-        ]
+        self._joint_command_topic = str(self.get_parameter('joint_command_topic').value)
+        self._joint_command_time_sec = max(
+            0.0, float(self.get_parameter('joint_command_time_sec').value)
+        )
+        .
         self._tool_offset = np.array(
             [
                 float(self.get_parameter('tool_offset_x').value),
@@ -185,6 +158,28 @@ class Rx150DlsIkExecutor(Node):
             ],
             dtype=float,
         )
+
+        # Single source of truth for the DLS solve: the same DlsSolver the path
+        # planner and RRT fallback use, built from this node's ROS params. Joint
+        # limits come from the solver config so planning and execution never
+        # disagree on the reachable range.
+        self._solver = DlsSolver(DlsSolverConfig(
+            position_weight=self._position_weight,
+            orientation_weight=self._orientation_weight,
+            damping=self._damping,
+            step_scale=self._step_scale,
+            max_joint_step=self._max_joint_step,
+            max_joint_velocity=self._max_joint_velocity,
+            servo_rate_hz=self._servo_rate_hz,
+            position_tolerance=self._position_tolerance,
+            orientation_tolerance=self._orientation_tolerance,
+            solver_max_iterations=self._solver_max_iterations,
+            orientation_mode=self._orientation_mode,
+            tool_axis=self._tool_axis,
+            tool_offset=self._tool_offset,
+        ))
+        self._joint_limits_lower = self._solver.config.joint_limits_lower
+        self._joint_limits_upper = self._solver.config.joint_limits_upper
 
         self._current_q: Optional[np.ndarray] = None
         self._target_position: Optional[np.ndarray] = None
@@ -196,6 +191,10 @@ class Rx150DlsIkExecutor(Node):
 
         self._joint_state_sub = self.create_subscription(
             JointState, self._joint_state_topic, self._joint_state_callback, 10
+        )
+        # Direct joint-command channel (no IK); used by the RRT whole-body fallback.
+        self._joint_command_sub = self.create_subscription(
+            JointState, self._joint_command_topic, self._joint_command_callback, 10
         )
         self._group_pub = None
         self._trajectory_pub = None
@@ -238,6 +237,30 @@ class Rx150DlsIkExecutor(Node):
         if not all(joint_name in positions for joint_name in self._joint_names):
             return
         self._current_q = np.array([positions[name] for name in self._joint_names], dtype=float)
+
+    def _joint_command_callback(self, msg: JointState) -> None:
+        """Command a pre-computed joint configuration directly, bypassing IK.
+
+        Used by the RRT-Connect whole-body fallback: the config is already
+        collision-checked in joint space, so re-solving it through Cartesian IK
+        (which could land in a different, unchecked posture) is exactly what we
+        must not do. The config is published through the same mode-aware channel
+        (`group`/`trajectory`) the solved targets use, so it is portable to the
+        physical arm unchanged.
+        """
+        positions = dict(zip(msg.name, msg.position))
+        base = self._current_q if self._current_q is not None else np.zeros(
+            len(self._joint_names), dtype=float
+        )
+        q_command = np.array(
+            [positions.get(name, base[index]) for index, name in enumerate(self._joint_names)],
+            dtype=float,
+        )
+        q_command = np.clip(q_command, self._joint_limits_lower, self._joint_limits_upper)
+        # A direct joint command supersedes any pending Cartesian solve so the
+        # servo loop does not fight it (the two channels are mutually exclusive).
+        self._clear_target()
+        self._publish_trajectory(q_command, self._joint_command_time_sec)
 
     def _target_callback(self, msg: PointStamped) -> None:
         self._set_point_target(msg, source='topic')
@@ -373,120 +396,27 @@ class Rx150DlsIkExecutor(Node):
             % (position_error_norm, orientation_error_norm)
         )
 
-    def _compute_task_errors(
-        self, current_xyz: np.ndarray, current_rotation: np.ndarray
-    ) -> tuple[np.ndarray, np.ndarray]:
-        position_error = self._target_position - current_xyz
-        if self._target_rotation is None:
-            return position_error, np.zeros(3, dtype=float)
-
-        if self._orientation_mode == 'exact':
-            orientation_error = self._rotation_error(current_rotation, self._target_rotation)
-        else:
-            target_axis_world = self._target_rotation @ self._tool_axis
-            orientation_error = self._axis_alignment_error(
-                current_rotation, self._tool_axis, target_axis_world
-            )
-        return position_error, orientation_error
-
-    def _solve_dq(
-        self, jacobian: np.ndarray, position_error: np.ndarray, orientation_error: np.ndarray
-    ) -> np.ndarray:
-        weighted_jacobian = np.vstack(
-            [
-                self._position_weight * jacobian[:3, :],
-                self._orientation_weight * jacobian[3:, :],
-            ]
-        )
-        weighted_error = np.concatenate(
-            [
-                self._position_weight * position_error,
-                self._orientation_weight * orientation_error,
-            ]
-        )
-
-        jj_t = weighted_jacobian @ weighted_jacobian.T
-        damping_matrix = (self._damping ** 2) * np.eye(weighted_jacobian.shape[0])
-        dq = weighted_jacobian.T @ np.linalg.solve(jj_t + damping_matrix, weighted_error)
-        dq *= self._step_scale
-
-        velocity_limited_step = self._max_joint_velocity / self._servo_rate_hz
-        dq = np.clip(dq, -velocity_limited_step, velocity_limited_step)
-        dq = np.clip(dq, -self._max_joint_step, self._max_joint_step)
-        return dq
-
     def _solve_target_configuration(
         self, q_seed: np.ndarray
     ) -> Optional[tuple[np.ndarray, float, float, bool]]:
-        q_trial = q_seed.copy()
-        best_q = q_trial.copy()
-        best_cost = float('inf')
-        best_position_error_norm = float('inf')
-        best_orientation_error_norm = float('inf')
+        """Solve the current target from ``q_seed`` via the shared DlsSolver.
 
-        for _ in range(self._solver_max_iterations):
-            current_xyz, current_rotation, jacobian = self._forward_kinematics(
-                q_trial, with_jacobian=True
-            )
-            position_error, orientation_error = self._compute_task_errors(
-                current_xyz, current_rotation
-            )
-            position_error_norm = float(np.linalg.norm(position_error))
-            orientation_error_norm = float(np.linalg.norm(orientation_error))
-            cost = (self._position_weight * position_error_norm) + (
-                self._orientation_weight * orientation_error_norm
-            )
-
-            if cost < best_cost:
-                best_cost = cost
-                best_q = q_trial.copy()
-                best_position_error_norm = position_error_norm
-                best_orientation_error_norm = orientation_error_norm
-
-            if (
-                position_error_norm <= self._position_tolerance
-                and orientation_error_norm <= self._orientation_tolerance
-            ):
-                return q_trial.copy(), position_error_norm, orientation_error_norm, True
-
-            dq = self._solve_dq(jacobian, position_error, orientation_error)
-            if np.linalg.norm(dq) < 1e-8:
-                break
-
-            q_trial = np.clip(
-                q_trial + dq,
-                self._joint_limits_lower,
-                self._joint_limits_upper,
-            )
-
-        if np.isfinite(best_cost):
-            return best_q, best_position_error_norm, best_orientation_error_norm, False
-        return None
+        Returns ``(q, position_error, orientation_error, converged)`` or None --
+        the same contract the servo loop already consumes.
+        """
+        return self._solver.solve(
+            q_seed, self._target_position, self._target_rotation
+        )
 
     def _forward_kinematics(self, q: np.ndarray, with_jacobian: bool = False):
-        transform = np.eye(4)
-        joint_positions = []
-        joint_axes_world = []
-
-        for origin, axis, joint_angle in zip(self._origins, self._axes, q):
-            transform = transform @ self._translation(origin)
-            joint_positions.append(transform[:3, 3].copy())
-            joint_axes_world.append(transform[:3, :3] @ axis)
-            transform = transform @ self._rotation(axis, joint_angle)
-
-        transform = transform @ self._translation(self._tool_offset)
-        end_effector_xyz = transform[:3, 3].copy()
-        end_effector_rotation = transform[:3, :3].copy()
-
-        if not with_jacobian:
-            return end_effector_xyz, end_effector_rotation, None
-
-        jacobian = np.zeros((6, len(self._joint_names)))
-        for index, (joint_origin, axis_world) in enumerate(zip(joint_positions, joint_axes_world)):
-            jacobian[:3, index] = np.cross(axis_world, end_effector_xyz - joint_origin)
-            jacobian[3:, index] = axis_world
-
-        return end_effector_xyz, end_effector_rotation, jacobian
+        if with_jacobian:
+            return rx150_kinematics.forward_kinematics_with_jacobian(
+                q, self._tool_offset
+            )
+        end_effector_xyz, end_effector_rotation = rx150_kinematics.forward_kinematics(
+            q, self._tool_offset
+        )
+        return end_effector_xyz, end_effector_rotation, None
 
     def _point_target_rotation_from_policy(
         self, current_rotation: Optional[np.ndarray] = None
@@ -545,68 +475,11 @@ class Rx150DlsIkExecutor(Node):
         return bool(np.max(np.abs(self._current_q - joint_target)) <= tolerance)
 
     @staticmethod
-    def _translation(offset: np.ndarray) -> np.ndarray:
-        transform = np.eye(4)
-        transform[:3, 3] = offset
-        return transform
-
-    @staticmethod
-    def _rotation(axis: np.ndarray, angle: float) -> np.ndarray:
-        axis = axis / np.linalg.norm(axis)
-        x_axis, y_axis, z_axis = axis
-        cos_theta = np.cos(angle)
-        sin_theta = np.sin(angle)
-        one_minus_cos = 1.0 - cos_theta
-        return np.array(
-            [
-                [
-                    cos_theta + x_axis * x_axis * one_minus_cos,
-                    x_axis * y_axis * one_minus_cos - z_axis * sin_theta,
-                    x_axis * z_axis * one_minus_cos + y_axis * sin_theta,
-                    0.0,
-                ],
-                [
-                    y_axis * x_axis * one_minus_cos + z_axis * sin_theta,
-                    cos_theta + y_axis * y_axis * one_minus_cos,
-                    y_axis * z_axis * one_minus_cos - x_axis * sin_theta,
-                    0.0,
-                ],
-                [
-                    z_axis * x_axis * one_minus_cos - y_axis * sin_theta,
-                    z_axis * y_axis * one_minus_cos + x_axis * sin_theta,
-                    cos_theta + z_axis * z_axis * one_minus_cos,
-                    0.0,
-                ],
-                [0.0, 0.0, 0.0, 1.0],
-            ],
-            dtype=float,
-        )
-
-    @staticmethod
     def _normalized_vector(vector: np.ndarray, fallback: np.ndarray) -> np.ndarray:
         norm = float(np.linalg.norm(vector))
         if norm <= 1e-9:
             return fallback.copy()
         return vector / norm
-
-    @staticmethod
-    def _rotation_error(current_rotation: np.ndarray, target_rotation: np.ndarray) -> np.ndarray:
-        return 0.5 * (
-            np.cross(current_rotation[:, 0], target_rotation[:, 0])
-            + np.cross(current_rotation[:, 1], target_rotation[:, 1])
-            + np.cross(current_rotation[:, 2], target_rotation[:, 2])
-        )
-
-    @staticmethod
-    def _axis_alignment_error(
-        current_rotation: np.ndarray,
-        tool_axis: np.ndarray,
-        target_axis_world: np.ndarray,
-    ) -> np.ndarray:
-        current_axis_world = current_rotation @ tool_axis
-        current_axis_world = current_axis_world / np.linalg.norm(current_axis_world)
-        target_axis_world = target_axis_world / np.linalg.norm(target_axis_world)
-        return np.cross(current_axis_world, target_axis_world)
 
     @staticmethod
     def _quaternion_to_rotation_matrix(quaternion: np.ndarray) -> Optional[np.ndarray]:
