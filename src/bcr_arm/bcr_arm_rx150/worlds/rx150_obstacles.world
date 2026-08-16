@@ -1,0 +1,102 @@
+<?xml version="1.0" ?>
+<sdf version="1.5">
+  <world name="default">
+    <!-- A global light source -->
+    <include>
+      <uri>model://sun</uri>
+    </include>
+    <!-- A ground plane -->
+    <include>
+      <uri>model://ground_plane</uri>
+    </include>
+
+    <!-- Obstacles scaled to the RX-150 (~0.45 m max reach).
+         Placed 0.33-0.40 m from the base: inside the planning workspace,
+         but outside the tucked scan orbit (~0.23 m) plus the camera's
+         0.05 m near-clip, so the sweep camera can actually see them. -->
+
+    <model name="obstacle_box_front_left">
+      <static>true</static>
+      <pose>0.34 0.14 0.12 0 0 0</pose>
+      <link name="link">
+        <collision name="collision">
+          <geometry>
+            <box><size>0.06 0.06 0.24</size></box>
+          </geometry>
+        </collision>
+        <visual name="visual">
+          <geometry>
+            <box><size>0.06 0.06 0.24</size></box>
+          </geometry>
+          <material>
+            <ambient>0.8 0.2 0.2 1</ambient>
+            <diffuse>0.8 0.2 0.2 1</diffuse>
+          </material>
+        </visual>
+      </link>
+    </model>
+
+    <model name="obstacle_cylinder_front_right">
+      <static>true</static>
+      <pose>0.33 -0.18 0.11 0 0 0</pose>
+      <link name="link">
+        <collision name="collision">
+          <geometry>
+            <cylinder><radius>0.035</radius><length>0.22</length></cylinder>
+          </geometry>
+        </collision>
+        <visual name="visual">
+          <geometry>
+            <cylinder><radius>0.035</radius><length>0.22</length></cylinder>
+          </geometry>
+          <material>
+            <ambient>0.2 0.4 0.8 1</ambient>
+            <diffuse>0.2 0.4 0.8 1</diffuse>
+          </material>
+        </visual>
+      </link>
+    </model>
+
+    <model name="obstacle_box_left">
+      <static>true</static>
+      <pose>0.06 0.38 0.10 0 0 0.5</pose>
+      <link name="link">
+        <collision name="collision">
+          <geometry>
+            <box><size>0.10 0.05 0.20</size></box>
+          </geometry>
+        </collision>
+        <visual name="visual">
+          <geometry>
+            <box><size>0.10 0.05 0.20</size></box>
+          </geometry>
+          <material>
+            <ambient>0.2 0.7 0.3 1</ambient>
+            <diffuse>0.2 0.7 0.3 1</diffuse>
+          </material>
+        </visual>
+      </link>
+    </model>
+
+    <model name="obstacle_box_behind">
+      <static>true</static>
+      <pose>-0.36 -0.10 0.10 0 0 0</pose>
+      <link name="link">
+        <collision name="collision">
+          <geometry>
+            <box><size>0.07 0.07 0.20</size></box>
+          </geometry>
+        </collision>
+        <visual name="visual">
+          <geometry>
+            <box><size>0.07 0.07 0.20</size></box>
+          </geometry>
+          <material>
+            <ambient>0.8 0.7 0.2 1</ambient>
+            <diffuse>0.8 0.7 0.2 1</diffuse>
+          </material>
+        </visual>
+      </link>
+    </model>
+  </world>
+</sdf>

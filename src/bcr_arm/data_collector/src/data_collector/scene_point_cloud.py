@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import math
+import time
 from typing import Optional
 
 import numpy as np
@@ -33,6 +34,7 @@ class ScenePointCloudRelay(Node):
         self.declare_parameter('camera_yaw', 3.14)
         self.declare_parameter('broadcast_static_tf', True)
         self.declare_parameter('max_range', 5.0)
+        self.declare_parameter('stall_timeout_sec', 2.0)
 
         self._input_topic = str(self.get_parameter('input_topic').value)
         self._output_topic = str(self.get_parameter('output_topic').value)
@@ -53,6 +55,7 @@ class ScenePointCloudRelay(Node):
             self.get_parameter('broadcast_static_tf').value
         )
         self._max_range = max(0.0, float(self.get_parameter('max_range').value))
+        self._stall_timeout_sec = max(0.0, float(self.get_parameter('stall_timeout_sec').value))
 
         self._rotation = self._euler_to_matrix(
             self._camera_roll,
@@ -76,6 +79,13 @@ class ScenePointCloudRelay(Node):
 
         self._cb_count = 0
         self._pub_count = 0
+        self._first_published = False
+        self._stalled = False
+        self._last_publish_monotonic: Optional[float] = None
+
+        # Watchdog: only speaks up when publishing stalls or recovers
+        if self._stall_timeout_sec > 0.0:
+            self.create_timer(self._stall_timeout_sec / 2.0, self._watchdog_cb)
 
         self.get_logger().info(
             'Relaying Gazebo scene point cloud from %s to %s in frame %s'
@@ -145,10 +155,34 @@ class ScenePointCloudRelay(Node):
         cloud.is_dense = True
         self._publisher.publish(cloud)
         self._pub_count += 1
-        if self._pub_count % 5 == 1:
+        self._last_publish_monotonic = time.monotonic()
+
+        if not self._first_published:
+            self._first_published = True
             self.get_logger().info(
-                'Published cloud (cb=%d pub=%d pts=%d)'
+                'Publishing cloud to %s (%d points).'
+                % (self._output_topic, cloud_arr.shape[0])
+            )
+        elif self._stalled:
+            self._stalled = False
+            self.get_logger().info(
+                'Cloud publishing resumed (cb=%d pub=%d pts=%d).'
                 % (self._cb_count, self._pub_count, cloud_arr.shape[0])
+            )
+
+    def _watchdog_cb(self) -> None:
+        """Warn once if the relay was publishing and has since gone quiet."""
+        if not self._first_published or self._stalled:
+            return
+        if self._last_publish_monotonic is None:
+            return
+        elapsed = time.monotonic() - self._last_publish_monotonic
+        if elapsed >= self._stall_timeout_sec:
+            self._stalled = True
+            self.get_logger().warning(
+                'Cloud publishing stalled: no output for %.1f s '
+                '(cb=%d pub=%d). Is the camera still streaming?'
+                % (elapsed, self._cb_count, self._pub_count)
             )
 
     def _lookup_transform(self, source_frame: str) -> Optional[np.ndarray]:

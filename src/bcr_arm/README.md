@@ -7,6 +7,11 @@ Custom ROS 2 workspace for two related manipulation tracks:
 
 The main custom work in this repo is centered on damped least squares (DLS) inverse kinematics, Cartesian target testing, and higher-level task experimentation.
 
+**The RX-150 arm is the main, most built-out stack.** It is a full custom pipeline — DLS inverse kinematics, an obstacle-avoiding path planner, a joint-space RRT-Connect whole-body fallback, and sweep-based point-cloud mapping — that runs in both simulation and on the physical arm. For setup and running, use the RX-150 command references:
+
+- **Simulation:** [bcr_arm_rx150/SIM_COMMANDS.md](bcr_arm_rx150/SIM_COMMANDS.md)
+- **Hardware:** [bcr_arm_rx150/HARDWARE_COMMANDS.md](bcr_arm_rx150/HARDWARE_COMMANDS.md)
+
 ![Gazebo BCR Arm simulation](images/gz_img1.png)
 
 ## What This Repo Focuses On
@@ -61,11 +66,14 @@ Use this when the goal is to:
 - compare custom motion behavior against the physical RX-150 track
 - keep all RX-150 launches local to `bcr_arm`
 
-Primary launch:
+Primary launch (bare Gazebo bringup):
 
 ```bash
 ros2 launch bcr_arm_rx150 rx150_gz_classic.launch.py
 ```
+
+**Full sim stack (obstacle planner + RRT-Connect fallback + sweep mapping + RViz viz) and all
+setup/run commands:** see **[bcr_arm_rx150/SIM_COMMANDS.md](bcr_arm_rx150/SIM_COMMANDS.md)**.
 
 ### 3. RX-150 Hardware
 
@@ -75,13 +83,19 @@ Use this when the goal is to:
 
 - control the real RX-150 from `bcr_arm`
 - run safe named poses and smoke tests
-- test the custom RX-150 DLS stack on hardware
+- test the custom RX-150 DLS stack on hardware, including the obstacle planner and RRT-Connect
+  whole-body fallback
 
-Primary launch:
+Primary launch (full planning stack; add `minimal:=true` for driver + IK only):
 
 ```bash
-ros2 launch bcr_arm_rx150 rx150_control.launch.py
+ros2 launch bcr_arm_rx150 rx150_dls_stack.launch.py
 ```
+
+`rx150_control.launch.py` brings up just the low-level driver if you need it standalone.
+
+**Full setup/run commands (Docker launch, safe bring-up, driving the stack):** see
+**[bcr_arm_rx150/HARDWARE_COMMANDS.md](bcr_arm_rx150/HARDWARE_COMMANDS.md)**.
 
 ## Prerequisites
 
@@ -238,37 +252,29 @@ Run the custom DLS stack for the physical RX-150:
 ros2 launch bcr_arm_rx150 rx150_dls_stack.launch.py
 ```
 
-In another terminal, send a safe starting pose:
+By default this brings up the **full** planning stack on the real arm — the arm driver, the
+DLS IK executor (conservative motion, frame `rx150/base_link`), the obstacle **planner**, the
+**RRT-Connect** whole-body fallback, both waypoint executors, and the cloud relay. Add
+`minimal:=true` for just the driver + IK executor (drive it directly, no planner):
+
+```bash
+ros2 launch bcr_arm_rx150 rx150_dls_stack.launch.py minimal:=true
+```
+
+The full stack needs a point cloud on `/planning/point_cloud` (from the RealSense + sweep — a
+port still in progress), so until the camera is wired use `minimal:=true` or feed a canned
+cloud. Targets use frame `rx150/base_link`.
+
+**See [bcr_arm_rx150/HARDWARE_COMMANDS.md](bcr_arm_rx150/HARDWARE_COMMANDS.md)** for the full,
+authoritative hardware command reference (Docker launch, named poses, smoke test, targets,
+suites, and driving the full planning stack). Quick examples, run against `minimal:=true`:
 
 ```bash
 ros2 run bcr_arm_rx150 rx150_named_pose --pose neutral_carry
-```
-
-Then publish conservative physical-arm targets with the custom sender:
-
-```bash
-ros2 run bcr_arm_rx150 rx150_target_test_suite
-```
-
-Available RX-150 test suites:
-
-- `smoke`: smallest, safest reach checks
-- `lateral`: center, left, and right point targets
-- `pose`: conservative exact-pose checks
-- `full`: all of the above in one run
-
-Example:
-
-```bash
-ros2 run bcr_arm_rx150 rx150_target_test_suite --suite smoke
-ros2 run bcr_arm_rx150 rx150_target_test_suite --suite lateral
-ros2 run bcr_arm_rx150 rx150_target_test_suite --suite full --auto --pause-sec 5.0
-```
-
-Or send a one-off Cartesian target directly through the custom solver:
-
-```bash
-ros2 run bcr_arm_rx150 rx150_dls_ik_executor --x 0.20 --y 0.00 --z 0.16
+ros2 run bcr_arm_rx150 rx150_smoke_test
+ros2 run bcr_arm_rx150 rx150_target_test_suite --suite smoke --ros-args -p world_frame:=rx150/base_link
+# suites: smoke (safest), lateral (center/left/right), pose (exact poses), full (all)
+ros2 run bcr_arm_rx150 rx150_dls_ik_executor --x 0.22 --y 0.00 --z 0.16 --frame rx150/base_link
 ```
 
 ## RX-150 Gazebo Sim Workflow
@@ -297,6 +303,13 @@ ros2 launch bcr_arm_rx150 rx150_moveit_interface.launch.py hardware_type:=gz_cla
 ```
 
 This sim entry point is a thin wrapper around the vendored Interbotix RX-150 sim stack in `interbotix`, so the RX-150 workflow remains locally launchable from `bcr_arm`.
+
+For the **full sim planning stack** (Gazebo world with obstacles + depth camera, the obstacle
+planner, the RRT-Connect whole-body fallback, sweep-based mapping, and RViz path
+visualization), launch `rx150_dls_sim_stack.launch.py` — see
+**[bcr_arm_rx150/SIM_COMMANDS.md](bcr_arm_rx150/SIM_COMMANDS.md)** for the full Docker command
+reference (build, launch, sweep, sending targets). The planner, RRT fallback, and executors
+are the same nodes that run on the physical arm (see the hardware workflow above).
 
 ## BCR Arm 7-DOF Gazebo Workflow
 
