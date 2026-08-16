@@ -3,6 +3,9 @@
 Subscribe to raw depth streams, transforms incoming cloud into base_link using TF2, clean statistical
 and radius outliers, voxel downsample, crop to workspace bounds,
 and merge clouds into a single obstacle map for motion.
+
+trigger the map building through CLI:
+ros2 service call /mapping_node/build_map std_srvs/srv/Trigger
 """
 
 from __future__ import annotations
@@ -312,8 +315,8 @@ class MappingNode(Node):
     # ------------------------------------------------------------------ #
 
     def _declare_parameters(self) -> None:
-        """Declare all configurable ROS2 parameters with their defaults. The default numbers are from claude lmao"""
-        self.declare_parameter("target_frame", "camera_base_link") #base_link if we have recording of joint, camera_base_link for now
+        """Declare all configurable ROS2 parameters with their defaults."""
+        self.declare_parameter("target_frame", "base_link")
         self.declare_parameter("voxel_size", 0.01) 
         self.declare_parameter("statistical_nb_neighbors", 20)
         self.declare_parameter("statistical_std_ratio", 2.0)

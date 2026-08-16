@@ -1,7 +1,7 @@
 """3D localization node.
 
 Takes 2D detections and aligned depth image, projects detection centers
-into 3D points in the camera frame using the pinhole camera model.
+into 3D points in base_link.
 """
 
 import numpy as np
@@ -9,8 +9,11 @@ import rclpy
 from rclpy.node import Node
 from sensor_msgs.msg import Image, CameraInfo
 from visualization_msgs.msg import Marker, MarkerArray
-from geometry_msgs.msg import Point, Vector3
+from geometry_msgs.msg import Point, PointStamped, Vector3
 import message_filters
+
+from tf2_ros import Buffer, TransformListener, TransformException
+from tf2_geometry_msgs import do_transform_point
 
 from arm_interfaces.msg import DetectedObject, DetectedObjectArray
 
@@ -25,6 +28,7 @@ class Localization3DNode(Node):
         self.declare_parameter('output_topic', '/perception/detections_3d')
         self.declare_parameter('marker_topic', '/perception/markers')
         self.declare_parameter('depth_scale', 0.001)  # RealSense default: mm to meters
+        self.declare_parameter('target_frame', 'base_link')
 
         #input topics
         det_topic = self.get_parameter('detection_topic').value
@@ -34,6 +38,10 @@ class Localization3DNode(Node):
         output_topic = self.get_parameter('output_topic').value
         marker_topic = self.get_parameter('marker_topic').value
         self._depth_scale = self.get_parameter('depth_scale').value
+        self._target_frame = self.get_parameter('target_frame').value
+        
+        self._tf_buffer = Buffer()
+        self._tf_listener = TransformListener(self._tf_buffer, self)
 
         # Camera intrinsics (populated from CameraInfo)
         self._fx = 0.0
@@ -137,20 +145,48 @@ class Localization3DNode(Node):
             x = (cx_px - self._cx) * z / self._fx
             y = (cy_px - self._cy) * z / self._fy
 
-            # Build enriched detection
+            # Build enriched detection with 3D position and dimensions
+
             det_3d = DetectedObject()
             det_3d.header = det.header
             det_3d.class_name = det.class_name
             det_3d.confidence = det.confidence
             det_3d.bbox_2d = det.bbox_2d
-            det_3d.position_3d = Point(x=x, y=y, z=z)
+
+            #det_3d.position_3d = Point(x=x, y=y, z=z)  -> still in camera frame
+
+            #transform position point to base_link frame. #TODO: make this a helper function?
+            point_in_camera_frame = PointStamped()
+            point_in_camera_frame.header = det_msg.header
+            point_in_camera_frame.point = Point(x=x, y=y, z=z)
+
+            try:
+                #look up transform (target_frame, source_frame, stamp)
+                transform = self._tf_buffer.lookup_transform(
+                    self._target_frame, 
+                    depth_msg.header.frame_id,
+                    depth_msg.header.stamp
+                )
+                # Apply the transform to the 3D point
+                point_in_base_link_frame = do_transform_point(point_in_camera_frame, transform)
+
+                det_3d.position_3d = point_in_base_link_frame.point
+            except TransformException as error:
+                self.get_logger().warning(
+                    f"TF lookup failed for '{depth_msg.header.frame_id}' -> "
+                    f"'{self._target_frame}': {error}. Skipping this detection."
+                )
+                continue
+            
+            det_3d.header.frame_id = self._target_frame
+
 
             # Estimate dimensions from bbox + depth
             bbox_w = det.bbox_2d[2] - det.bbox_2d[0]
             bbox_h = det.bbox_2d[3] - det.bbox_2d[1]
             dim_x = bbox_w * z / self._fx
             dim_y = bbox_h * z / self._fy
-            det_3d.dimensions_3d = Vector3(x=dim_x, y=dim_y, z=0.05)
+            det_3d.dimensions_3d = Vector3(x=dim_x, y=dim_y, z=0.05) #Vector is still in camera frame TODO: does motion needs this?
 
             output.objects.append(det_3d)
 

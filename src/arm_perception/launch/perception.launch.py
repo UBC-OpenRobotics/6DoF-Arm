@@ -28,21 +28,28 @@ def generate_launch_description():
             default_value='',
             description='RealSense camera serial number',
         ),
-
-        # RealSense camera driver (from upstream package)
-        IncludeLaunchDescription(
-            PythonLaunchDescriptionSource([
-                get_package_share_directory('realsense2_camera'),
-                '/launch/rs_launch.py',
-            ]),
-            launch_arguments={
-                'align_depth.enable': 'true',
-                'pointcloud.enable': 'true',
-                'rosbag_filename': '/ros2_ws/bag_files/test1_uncompressed.bag',
-                'serial_no': LaunchConfiguration('camera_serial_no'),
-            }.items(),
-            condition=IfCondition(LaunchConfiguration('enable_camera')),
+        DeclareLaunchArgument(
+            'planning_frame', 
+            default_value='camera_base_link'
         ),
+
+        # use camera_base_link for testing vision with realsense bag files (without running the arm live)
+        #TODO: confirm planning_frame (namespace? rx150/base_link?)
+
+        # # RealSense camera driver (from upstream package)
+        # IncludeLaunchDescription(
+        #     PythonLaunchDescriptionSource([
+        #         get_package_share_directory('realsense2_camera'),
+        #         '/launch/rs_launch.py',
+        #     ]),
+        #     launch_arguments={
+        #         'align_depth.enable': 'true',
+        #         'pointcloud.enable': 'true',
+        #         'rosbag_filename': '/ros2_ws/bag_files/test1_uncompressed.bag',
+        #         'serial_no': LaunchConfiguration('camera_serial_no'),
+        #     }.items(),
+        #     condition=IfCondition(LaunchConfiguration('enable_camera')),
+        # ),
 
         # # RealSense health monitor --> commented out for now it's causing conflict with the realsense driver
         # Node(
@@ -53,17 +60,17 @@ def generate_launch_description():
         #     output='screen',
         # ),
 
-        # # Color preprocessing
-        # Node(
-        #     package='arm_perception',
-        #     executable='color_preprocessing_node',
-        #     name='color_preprocessing_node',
-        #     parameters=[{
-        #         'filter': 'median', # options: none, bilateral, median, gaussian
-        #         'light_processing': 'none', # options: none, clahe
-        #     }],
-        #     output='screen',
-        # ),
+        # Color preprocessing
+        Node(
+            package='arm_perception',
+            executable='color_preprocessing_node',
+            name='color_preprocessing_node',
+            parameters=[{
+                'filter': 'median', # options: none, bilateral, median, gaussian
+                'light_processing': 'none', # options: none, clahe
+            }],
+            output='screen',
+        ),
 
         # YOLO detector
         Node(
@@ -81,6 +88,7 @@ def generate_launch_description():
             name='localization_3d_node',
             parameters=[{
                 'depth_scale': 0.001,
+                'target_frame' : LaunchConfiguration('planning_frame'),
             }],
             output='screen',
         ),
@@ -100,5 +108,29 @@ def generate_launch_description():
             executable='get_3d_point_action_node',
             name='get_3d_point_action_node',
             output='screen',
-        )
+        ),
+
+        # Static transform publisher to connect TF tree between camera_base_link (from the arm's tree) and camera_link (from the realsense driver's tree)
+        Node(
+            package='tf2_ros',
+            executable='static_transform_publisher',
+            arguments=['0', '0', '0', '0', '0', '0', 'camera_base_link', 'camera_link'],
+            output='screen',
+        ),
+
+        #TODO: confirm camera_base_link name and realsense driver camera_link name
+        #arguments=['0', '0', '0', '0', '0', '0', '<real_arm_side_camera_base_link_name>', '<real_driver_side_camera_link_name>'],
+
+        #Point cloud mapping node
+        Node(
+            package='arm_perception',
+            executable='mapping_node',
+            name='mapping_node',
+            parameters=[{
+                'depth_scale': 0.001,
+                'enable_radius_outlier_removal': True,
+                'target_frame' : LaunchConfiguration('planning_frame'),
+            }],
+            output='screen',
+        ),
     ])

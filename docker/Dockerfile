@@ -13,6 +13,8 @@ RUN apt-get update && apt-get install -y \
     ros-${ROS_DISTRO}-tf2-ros \
     ros-${ROS_DISTRO}-tf2-geometry-msgs \
     ros-${ROS_DISTRO}-rmw-cyclonedds-cpp \
+    libgl1 \
+    libgomp1 \
     && rm -rf /var/lib/apt/lists/*
 
 # MoveIt 2
@@ -32,6 +34,7 @@ RUN apt-get update && apt-get install -y \
 RUN pip3 install --no-cache-dir \
     ultralytics==8.4.67 \
     opencv-python-headless \
+    open3d \
     "numpy<2"
 
 # RQT and common plugins for debugging and visualization in the dev stage
