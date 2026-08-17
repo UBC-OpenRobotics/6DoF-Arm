@@ -16,6 +16,7 @@ from rclpy.node import Node
 from rclpy.qos import DurabilityPolicy, QoSProfile, qos_profile_sensor_data
 from sensor_msgs.msg import JointState, PointCloud2
 from sensor_msgs_py import point_cloud2
+from std_msgs.msg import String
 from trajectory_msgs.msg import JointTrajectory, JointTrajectoryPoint
 from visualization_msgs.msg import Marker, MarkerArray
 
@@ -124,6 +125,10 @@ class Rx150PointCloudPathPlanner(Node):
         self._joint_path_pub = self.create_publisher(
             JointTrajectory, self._joint_path_topic, 10
         )
+        self.declare_parameter('status_topic', '/motion/status')
+        self._status_pub = self.create_publisher(
+            String, str(self.get_parameter('status_topic').value), 10
+        )
 
         marker_qos = QoSProfile(depth=1)
         marker_qos.durability = DurabilityPolicy.TRANSIENT_LOCAL
@@ -155,9 +160,14 @@ class Rx150PointCloudPathPlanner(Node):
             return
         self._latest_cloud = np.asarray(points, dtype=np.float32)
 
+    def _emit(self, event: str) -> None:
+        """Publish a motion lifecycle event (planner:no_path)."""
+        self._status_pub.publish(String(data=event))
+
     def _target_cb(self, msg: PointStamped) -> None:
         frame = msg.header.frame_id or self._world_frame
         if frame != self._world_frame:
+            # Not addressed to this planner's frame -- stay silent (no event).
             self.get_logger().warning(
                 "Ignoring target in frame '%s'; expected '%s'." % (frame, self._world_frame)
             )
@@ -167,9 +177,11 @@ class Rx150PointCloudPathPlanner(Node):
 
         if self._current_q is None:
             self.get_logger().warning('No current joint state yet; cannot plan path.')
+            self._emit('planner:no_path')
             return
         if self._latest_cloud is None:
             self.get_logger().warning('No planning point cloud yet; cannot plan path.')
+            self._emit('planner:no_path')
             return
 
         start_xyz = rx150_kinematics.forward_kinematics(self._current_q)[0]
@@ -183,6 +195,7 @@ class Rx150PointCloudPathPlanner(Node):
         goal_idx = self._world_to_grid(goal_xyz[:2])
         if start_idx is None or goal_idx is None:
             self.get_logger().warning('Start or goal lies outside planner grid bounds.')
+            self._emit('planner:no_path')
             return
 
 
@@ -232,6 +245,7 @@ class Rx150PointCloudPathPlanner(Node):
             'Could not find a whole-body collision-free path within %d attempt(s); '
             'publishing nothing.' % self._max_replan_attempts
         )
+        self._emit('planner:no_path')
 
     def _try_rrt_fallback(
         self,

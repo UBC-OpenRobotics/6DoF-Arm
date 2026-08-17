@@ -12,6 +12,13 @@ The main custom work in this repo is centered on damped least squares (DLS) inve
 - **Simulation:** [bcr_arm_rx150/SIM_COMMANDS.md](bcr_arm_rx150/SIM_COMMANDS.md)
 - **Hardware:** [bcr_arm_rx150/HARDWARE_COMMANDS.md](bcr_arm_rx150/HARDWARE_COMMANDS.md)
 
+The highest-level thing this stack does is a full **cup pick-and-place mission** — one
+launch, repeatable, driven by keyboard (`s` start / `x` stop / `r` restart), running
+the same way in sim and on the physical arm. It has its own reference, including what
+is still stubbed out and what remains to implement:
+
+- **Mission:** [bcr_arm_rx150/PICK_PLACE_MISSION.md](bcr_arm_rx150/PICK_PLACE_MISSION.md)
+
 ![Gazebo BCR Arm simulation](images/gz_img1.png)
 
 ## What This Repo Focuses On

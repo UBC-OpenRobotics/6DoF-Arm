@@ -42,6 +42,15 @@ def generate_launch_description():
         DeclareLaunchArgument('use_waypoint_executor', default_value='true'),
         DeclareLaunchArgument('use_joint_waypoint_executor', default_value='true'),
         DeclareLaunchArgument('waypoint_target_mode', default_value='point'),
+        # carry_level:=true keeps the gripper LEVEL while executing planned paths
+        # (pose_level + exact IK orientation) so a grasped cup stays upright.
+        # Default off -- position-only, freer to reach.
+        DeclareLaunchArgument(
+            'carry_level', default_value='false',
+            description='Keep the gripper LEVEL while moving (approach horizontal, '
+                        'gripper-up = world-up) so a grasped cup stays upright '
+                        '(pose_level + exact IK).',
+        ),
         DeclareLaunchArgument('planning_frame', default_value='rx150/base_link'),
         IncludeLaunchDescription(
             PythonLaunchDescriptionSource([
@@ -76,6 +85,17 @@ def generate_launch_description():
                 'fallback_to_neutral_on_failure': False,
                 'position_tolerance': 0.015,
                 'joint_command_topic': '/rx150/joint_command',
+            }],
+        ),
+        Node(
+            package='bcr_arm_rx150',
+            executable='rx150_gripper_controller',
+            output='screen',
+            parameters=[{
+                'command_mode': 'trajectory',
+                'command_topic': '/rx150/gripper_controller/joint_trajectory',
+                # 0.0 = closed, 1.0 = fully open
+                'command_units': 'normalized',
             }],
         ),
         Node(

@@ -11,6 +11,7 @@ import numpy as np
 import rclpy
 from rclpy.node import Node
 from sensor_msgs.msg import JointState
+from std_msgs.msg import Bool, Empty, String
 
 
 class Rx150PathWaypointExecutor(Node):
@@ -27,12 +28,20 @@ class Rx150PathWaypointExecutor(Node):
         self.declare_parameter('executing_path_topic', '/ik_waypoint_path')
         self.declare_parameter('waypoint_target_mode', 'point')
         self.declare_parameter('waypoint_reached_tolerance', 0.015)
+        # Holding the gripper level costs the 5-DOF arm some positional accuracy,
+        # so carry moves get a slightly looser arrival test. Safe to loosen only
+        # because the IK refuses over-tilted solves outright (max_carry_tilt_deg)
+        # -- position slack never buys a spilled cup.
+        self.declare_parameter('carry_waypoint_reached_tolerance', 0.022)
         self.declare_parameter('publish_period_sec', 0.5)
         self.declare_parameter('waypoint_height_offset', 0.0)
         self.declare_parameter('verbose_waypoint_logging', True)
         self.declare_parameter('stuck_waypoint_warn_sec', 2.0)
         self.declare_parameter('stuck_waypoint_log_period_sec', 2.0)
         self.declare_parameter('stuck_waypoint_abort_sec', 12.0)
+        self.declare_parameter('carry_level_topic', '/motion/carry_level')
+        self.declare_parameter('status_topic', '/motion/status')
+        self.declare_parameter('cancel_topic', '/motion/cancel')
 
         self._world_frame = str(self.get_parameter('world_frame').value)
         self._joint_state_topic = str(self.get_parameter('joint_state_topic').value)
@@ -41,15 +50,26 @@ class Rx150PathWaypointExecutor(Node):
         self._ik_target_pose_topic = str(self.get_parameter('ik_target_pose_topic').value)
         self._executing_path_topic = str(self.get_parameter('executing_path_topic').value)
         waypoint_target_mode = str(self.get_parameter('waypoint_target_mode').value).strip().lower()
-        if waypoint_target_mode not in {'point', 'pose_locked_current'}:
+        # point               -> position only (orientation free).
+        # pose_locked_current -> hold the orientation the EE had at path start.
+        # pose_level          -> force a LEVEL orientation (approach horizontal,
+        #                        gripper-up = world-up) so a grasped cup stays
+        #                        upright regardless of the arm's incoming pitch.
+        if waypoint_target_mode not in {'point', 'pose_locked_current', 'pose_level'}:
             self.get_logger().warning(
                 "Unknown waypoint_target_mode '%s'. Falling back to 'point'."
                 % waypoint_target_mode
             )
             waypoint_target_mode = 'point'
-        self._waypoint_target_mode = waypoint_target_mode
-        self._waypoint_reached_tolerance = float(
+        self._carry_level_active = waypoint_target_mode == 'pose_level'
+        self._base_waypoint_target_mode = (
+            'point' if self._carry_level_active else waypoint_target_mode
+        )
+        self._base_waypoint_reached_tolerance = float(
             self.get_parameter('waypoint_reached_tolerance').value
+        )
+        self._carry_waypoint_reached_tolerance = float(
+            self.get_parameter('carry_waypoint_reached_tolerance').value
         )
         self._publish_period_sec = max(
             0.05, float(self.get_parameter('publish_period_sec').value)
@@ -82,14 +102,85 @@ class Rx150PathWaypointExecutor(Node):
 
         self.create_subscription(JointState, self._joint_state_topic, self._joint_state_cb, 10)
         self.create_subscription(Path, self._path_topic, self._path_cb, 10)
+        self.create_subscription(
+            Bool,
+            str(self.get_parameter('carry_level_topic').value),
+            self._carry_level_cb,
+            10,
+        )
+        # Hard stop: drop whatever path is running (mission stop/restart).
+        self.create_subscription(
+            Empty,
+            str(self.get_parameter('cancel_topic').value),
+            self._cancel_cb,
+            10,
+        )
         self._point_pub = self.create_publisher(PointStamped, self._ik_target_topic, 10)
         self._pose_pub = self.create_publisher(PoseStamped, self._ik_target_pose_topic, 10)
         self._executing_path_pub = self.create_publisher(Path, self._executing_path_topic, 10)
+        self._status_pub = self.create_publisher(
+            String, str(self.get_parameter('status_topic').value), 10
+        )
         self.create_timer(self._publish_period_sec, self._timer_cb)
 
         self.get_logger().info(
             'RX-150 waypoint executor listening on %s and publishing IK waypoints to %s'
             % (self._path_topic, self._ik_target_topic)
+        )
+
+    def _reset_path_state(self) -> None:
+        """Drop the active path and all per-waypoint bookkeeping that tracks it."""
+        self._active_waypoints = []
+        self._current_waypoint_index = 0
+        self._last_published_index = -1
+        self._last_logged_waypoint_index = -1
+        self._active_waypoint_publish_time_sec = None
+        self._last_stuck_log_time_sec = None
+        self._publish_remaining_path()
+
+    def _cancel_cb(self, _msg: Empty) -> None:
+        """Abandon the running path on request.
+
+        Emits path:aborted only when something was actually running: a cancel
+        sent while idle must not leave a stale terminal event sitting on the
+        status topic for the *next* move to mistake for its own result.
+        """
+        if not self._active_waypoints:
+            self.get_logger().info('Cancel received; no path was running.')
+            return
+        remaining = len(self._active_waypoints) - self._current_waypoint_index
+        self.get_logger().warning(
+            'Cancel received: discarding %d remaining waypoint(s).' % remaining
+        )
+        self._reset_path_state()
+        self._emit('path:aborted')
+
+    def _emit(self, event: str) -> None:
+        """Publish a motion lifecycle event (path:complete / path:aborted)."""
+        self._status_pub.publish(String(data=event))
+
+    @property
+    def _waypoint_reached_tolerance(self) -> float:
+        """Arrival test: looser while carrying, since level costs accuracy."""
+        if self._carry_level_active:
+            return self._carry_waypoint_reached_tolerance
+        return self._base_waypoint_reached_tolerance
+
+    @property
+    def _waypoint_target_mode(self) -> str:
+        """Mode for the next path: level while carrying, base mode otherwise."""
+        if self._carry_level_active:
+            return 'pose_level'
+        return self._base_waypoint_target_mode
+
+    def _carry_level_cb(self, msg: Bool) -> None:
+        requested = bool(msg.data)
+        if requested == self._carry_level_active:
+            return
+        self._carry_level_active = requested
+        self.get_logger().info(
+            'Level-carry %s; applies from the next planned path.'
+            % ('ENABLED' if requested else 'disabled')
         )
 
     def _joint_state_cb(self, msg: JointState) -> None:
@@ -127,15 +218,18 @@ class Rx150PathWaypointExecutor(Node):
 
         if not xyz_points:
             self.get_logger().warning('Path only contained a start pose; nothing to execute.')
+            self._emit('path:complete')
             return
 
-        if self._waypoint_target_mode == 'pose_locked_current':
+        if self._waypoint_target_mode in ('pose_locked_current', 'pose_level'):
             if self._current_q is None:
                 self.get_logger().warning(
                     'No current joint state yet; cannot lock carry orientation for path execution.'
                 )
                 return
             _, current_rotation = self._forward_kinematics_pose(self._current_q)
+            if self._waypoint_target_mode == 'pose_level':
+                current_rotation = self._level_rotation(current_rotation)
             self._locked_target_quaternion = self._rotation_matrix_to_quaternion(
                 current_rotation
             )
@@ -145,7 +239,9 @@ class Rx150PathWaypointExecutor(Node):
                 )
                 return
             self.get_logger().info(
-                'Locked current end-effector orientation for carry path execution.'
+                'Holding %s orientation for carry path execution.'
+                % ('LEVEL' if self._waypoint_target_mode == 'pose_level'
+                   else 'current')
             )
         else:
             self._locked_target_quaternion = None
@@ -190,23 +286,15 @@ class Rx150PathWaypointExecutor(Node):
                     distance_to_target,
                 )
             )
-            self._active_waypoints = []
-            self._last_published_index = -1
-            self._last_logged_waypoint_index = -1
-            self._active_waypoint_publish_time_sec = None
-            self._last_stuck_log_time_sec = None
-            self._publish_remaining_path()
+            self._reset_path_state()
+            self._emit('path:aborted')
             return
 
         if distance_to_target <= self._waypoint_reached_tolerance:
             self._current_waypoint_index += 1
             if self._current_waypoint_index >= len(self._active_waypoints):
-                self._active_waypoints = []
-                self._last_published_index = -1
-                self._last_logged_waypoint_index = -1
-                self._active_waypoint_publish_time_sec = None
-                self._last_stuck_log_time_sec = None
-                self._publish_remaining_path()
+                self._reset_path_state()
+                self._emit('path:complete')
                 return
             target_xyz = self._active_waypoints[self._current_waypoint_index]
             self._active_waypoint_publish_time_sec = None
@@ -216,10 +304,7 @@ class Rx150PathWaypointExecutor(Node):
         if self._last_published_index == self._current_waypoint_index:
             return
 
-        if (
-            self._waypoint_target_mode == 'pose_locked_current'
-            and self._locked_target_quaternion is not None
-        ):
+        if self._locked_target_quaternion is not None:
             pose_msg = PoseStamped()
             pose_msg.header.stamp = self.get_clock().now().to_msg()
             pose_msg.header.frame_id = self._world_frame
@@ -342,6 +427,23 @@ class Rx150PathWaypointExecutor(Node):
 
     def _forward_kinematics_pose(self, q: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
         return rx150_kinematics.forward_kinematics(q)
+
+    @staticmethod
+    def _level_rotation(rotation: np.ndarray) -> np.ndarray:
+        """Flatten an EE orientation to a level one that keeps a cup upright.
+
+        Keeps the gripper's facing (the horizontal component of its approach/tool
+        +x axis) but forces the approach horizontal and gripper-up = world-up, so
+        the held object's axis stays vertical regardless of the arm's incoming
+        pitch. Falls back to base +x if the approach was near-vertical.
+        """
+        approach = rotation @ np.array([1.0, 0.0, 0.0])
+        horizontal = np.array([approach[0], approach[1], 0.0])
+        norm = float(np.linalg.norm(horizontal))
+        x_axis = horizontal / norm if norm > 1e-6 else np.array([1.0, 0.0, 0.0])
+        z_axis = np.array([0.0, 0.0, 1.0])
+        y_axis = np.cross(z_axis, x_axis)
+        return np.column_stack((x_axis, y_axis, z_axis))
 
     def _clock_now_sec(self) -> float:
         now_msg = self.get_clock().now().to_msg()
