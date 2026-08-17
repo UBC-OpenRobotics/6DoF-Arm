@@ -2,7 +2,11 @@ from launch import LaunchDescription
 from launch.actions import DeclareLaunchArgument, IncludeLaunchDescription
 from launch.conditions import IfCondition, UnlessCondition
 from launch.launch_description_sources import PythonLaunchDescriptionSource
-from launch.substitutions import LaunchConfiguration, PathJoinSubstitution
+from launch.substitutions import (
+    LaunchConfiguration,
+    PathJoinSubstitution,
+    PythonExpression,
+)
 from launch_ros.actions import Node
 from launch_ros.substitutions import FindPackageShare
 
@@ -10,6 +14,12 @@ from launch_ros.substitutions import FindPackageShare
 def generate_launch_description():
     planning_frame = LaunchConfiguration('planning_frame')
     minimal = LaunchConfiguration('minimal')
+    carry_level = LaunchConfiguration('carry_level')
+
+    carry_on = ["'", carry_level, "'.lower() == 'true'"]
+    orientation_mode = PythonExpression(
+        ["'exact' if "] + carry_on + [" else 'upright_free_yaw'"]
+    )
 
     # Conservative motion params shared by both IK-executor variants. The real
     # arm moves slowly / gently for safe bring-up; raise once trusted. All the
@@ -26,7 +36,7 @@ def generate_launch_description():
         'max_joint_velocity': 0.25,
         'goal_time_sec': 4.0,
         'point_target_orientation_policy': 'none',
-        'orientation_mode': 'upright_free_yaw',
+        'orientation_mode': orientation_mode,
     }
 
     return LaunchDescription([
@@ -40,9 +50,19 @@ def generate_launch_description():
         #   directly with Cartesian targets, no camera/planner). Use this until
         #   the RealSense port is done, or for a bare bring-up.
         DeclareLaunchArgument('minimal', default_value='false'),
+        # carry_level:=true keeps the gripper level (orientation-locked) while
+        # moving so a grasped cup can't tip. Default off (position-only, freer to
+        # reach). Applies to the FULL-stack Cartesian path; the RRT fallback joint
+        # path does NOT hold orientation (it commands raw configs).
+        DeclareLaunchArgument(
+            'carry_level', default_value='false',
+            description='Keep the gripper LEVEL while moving (approach horizontal, '
+                        'gripper-up = world-up) so a grasped cup stays upright '
+                        '(pose_level + exact IK).',
+        ),
         DeclareLaunchArgument('planning_frame', default_value='rx150/base_link'),
         # Where the RealSense driver publishes its cloud (the relay's input). The
-        # driver itself is the in-progress hardware port -- start it separately
+        # driver itself is the in-progress hardware port. Start it separately
         # (see HARDWARE_COMMANDS.md); until then the planner idles with no cloud.
         DeclareLaunchArgument(
             'camera_points_topic', default_value='/camera/depth/color/points'
@@ -61,6 +81,22 @@ def generate_launch_description():
                 'use_rviz': LaunchConfiguration('use_rviz'),
                 'load_configs': LaunchConfiguration('load_configs'),
             }.items(),
+        ),
+
+        # --- Gripper controller (both modes; independent of the camera) --------
+        # One servo named `gripper` on the physical arm, driven via
+        # JointSingleCommand. open/closed default to servo-angle placeholders --
+        # verify on hardware (see rx150_gripper_controller docstring).
+        Node(
+            package='bcr_arm_rx150',
+            executable='rx150_gripper_controller',
+            output='screen',
+            parameters=[{
+                'command_mode': 'single',
+                'command_topic': '/rx150/commands/joint_single',
+                # 0.0 = closed, 1.0 = open -- same command works in sim.
+                'command_units': 'normalized',
+            }],
         ),
 
         # --- MINIMAL mode: IK executor listens directly on /cartesian_target ---
@@ -134,6 +170,9 @@ def generate_launch_description():
                 'path_topic': '/planned_cartesian_path',
                 'ik_target_topic': '/ik_waypoint_target',
                 'ik_target_pose_topic': '/ik_waypoint_target_pose',
+                # Level-carry is toggled at runtime on /motion/carry_level by the
+                # orchestrator; the executor starts unconstrained.
+                'waypoint_target_mode': 'point',
             }],
         ),
 

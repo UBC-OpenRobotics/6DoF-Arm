@@ -190,6 +190,116 @@ Either way, once a cloud exists, send targets exactly like sim
 `rx150/base_link`. The planner routes it, and on success the arm executes the Cartesian path,
 or a **green** RRT joint path if the whole-body fallback fires.
 
+## 10. Open / close the gripper
+
+The stack launches `rx150_gripper_controller` automatically (both minimal and full modes). On
+hardware the gripper is a **single servo** named `gripper` (motor ID 6), driven with a
+`JointSingleCommand` on `/rx150/commands/joint_single`. The node gives you three ways to command
+it — a named state or a value — on `/rx150/gripper_command`. The stack runs in **normalized**
+units, so the value is `0.0` (closed) .. `1.0` (open) and **the exact same command works in sim**:
+
+```bash
+# Open / close (named states -> the open_position / closed_position params)
+docker compose exec rx150-hardware bash -lc "source /workspaces/bcr_arm/install/setup.bash && \
+ros2 topic pub --once /rx150/gripper_command std_msgs/msg/String '{data: open}'"
+
+docker compose exec rx150-hardware bash -lc "source /workspaces/bcr_arm/install/setup.bash && \
+ros2 topic pub --once /rx150/gripper_command std_msgs/msg/String '{data: close}'"
+
+# A specific openness: 0.0 = closed, 1.0 = open (here 70% open)
+docker compose exec rx150-hardware bash -lc "source /workspaces/bcr_arm/install/setup.bash && \
+ros2 topic pub --once /rx150/gripper_command std_msgs/msg/String '{data: \"0.7\"}'"
+```
+
+There is also a one-shot CLI (spins up its own node) and a `Float64` channel:
+
+```bash
+ros2 run bcr_arm_rx150 rx150_gripper_controller --state open      # or: --state close
+ros2 run bcr_arm_rx150 rx150_gripper_controller --position 0.7 --ros-args -p command_units:=normalized
+ros2 topic pub --once /rx150/gripper_position std_msgs/msg/Float64 '{data: 0.7}'
+```
+
+> **Units + safety (read before first grip).** The launch ships `command_units:=normalized`, so
+> `open`/`close`/`0..1` behave the same as sim. Under the hood the node maps `0..1` onto
+> `closed_position`..`open_position`, whose values are in the gripper motor's **operating mode**
+> units: `position` mode -> servo **radians**, `pwm` mode -> raw PWM effort. The endpoint defaults
+> (`open=1.5`, `close=0.6`) are **position-mode placeholders — verify on the real arm** before
+> trusting them, since a wrong closed value can stall the servo against the fingers. Override per
+> launch, e.g. `-p open_position:=… -p closed_position:=…`. (To command raw servo units directly
+> instead of `0..1`, set `-p command_units:=native`.)
+
+## 11. Run the full pick-and-place mission (orchestrator)
+
+Instead of driving the steps by hand across several terminals, one launch brings up
+the whole mission — the full stack **plus** the conductor
+(`rx150_pick_place_orchestrator`) that sequences it: sweep → find cup → move → grasp
+→ lift → find goal → move → release → lift clear → home. It issues the *same*
+`/cartesian_target` and `/rx150/gripper_command` messages you send manually, and
+waits for each move to actually finish before the next — the planner and executors
+now emit lifecycle **events** on `/motion/status` (`path:complete`/`joint:complete`
+on success, `path:aborted`/`joint:aborted`/`planner:no_path` on failure), with a
+`move_timeout_sec` backstop so a lost event can't hang the mission.
+
+Vision is external (a teammate owns it). Until it's connected, two stubs let the
+whole mission run: `vision_placeholder` (answers the vision request with a canned
+point) and `sweep_placeholder` (latches a canned obstacle cloud). Swap each out with
+`use_vision_stub:=false` / `use_sweep_stub:=false` once the real nodes publish the
+same topics.
+
+```bash
+# Terminal 1 — bring up the mission (nothing moves yet; waits for a start trigger)
+cd ~/openRobotics/src/bcr_arm
+docker compose run --rm --service-ports rx150-hardware \
+  ros2 launch bcr_arm_rx150 rx150_pick_place.launch.py
+
+# Terminal 2 — start the mission
+docker compose exec rx150-hardware bash -lc "source /workspaces/bcr_arm/install/setup.bash && \
+ros2 topic pub --once /mission/start std_msgs/msg/Empty '{}'"
+```
+
+Or start immediately on launch with `autostart:=true` (skips the trigger — only once
+you trust the scene).
+
+**Vision contract (for the teammate).** The orchestrator asks on
+`/vision/find_request` (`std_msgs/String`, `"cup"` or `"goal"`) and expects a
+`geometry_msgs/PointStamped` back on `/vision/object_point` in `rx150/base_link` — the
+exact vector you'd type into `/cartesian_target`. That's the whole interface; see the
+VISION CONTRACT block in `rx150_pick_place_orchestrator.py` and
+[PICK_PLACE_ORCHESTRATOR_PLAN.md](PICK_PLACE_ORCHESTRATOR_PLAN.md).
+
+**Keep the cup level (`carry_level`).** By default the arm tracks target *positions*
+only — the wrist is free to rotate as it moves, which can tip a full cup. Launch
+with `carry_level:=true` to force a **level** gripper orientation while executing a
+planned path. The IK solver uses a soft constraint: it keeps the wrist **mostly flat**
+(pitch within ~±5° of horizontal), allowing the 5-DOF arm to still reach otherwise
+unreachable positions by tilting slightly if necessary. The approach axis is flattened
+to horizontal, gripper-up aligns to world-up (preserving facing), and it tracks that
+orientation preferentially across the motion. A grasped cup stays upright in most poses;
+tight reachability corners may incur small tilts. (Note: this *levels* the pose, it does
+not merely hold the incoming one — a wrist that solved to e.g. 30° up is flattened to 0°.)
+
+```bash
+docker compose run --rm --service-ports rx150-hardware \
+  ros2 launch bcr_arm_rx150 rx150_pick_place.launch.py carry_level:=true
+```
+
+> **Two caveats:**
+> 1. This soft-constraint applies only on the **Cartesian** path (the normal case). If the
+>    planner falls back to the **RRT** whole-body detour (cluttered scene), that path is
+>    executed as raw joint configs and does **not** hold orientation — so in tight scenes a
+>    level guarantee isn't absolute.
+> 2. The pitch tolerance (default 5°) is tunable per-launch as `carry_level_pitch_tolerance_deg`.
+>    Lower tolerances force stricter level-keeping but may make some positions unreachable;
+>    higher tolerances allow more freedom but accept more tilt. Same flag/tolerance exist on
+>    `rx150_pick_place_sim.launch.py`.
+
+**Safety.** If the planner can't find a whole-body path it emits `planner:no_path`,
+so the mission **aborts immediately and returns home without closing the gripper** —
+it will not grasp empty air. Key params (override with `-p name:=value` on the
+orchestrator, or edit the launch): `grasp_value` (placeholder — **set a real value
+for the cup**, see §10 units note), `lift_dz`, `clearance_dz`, `place_height`,
+`move_timeout_sec` (event backstop).
+
 ## Notes / differences from sim (quick reference)
 
 | | Sim ([SIM_COMMANDS.md](SIM_COMMANDS.md)) | Hardware (this doc) |
@@ -207,3 +317,28 @@ The IK solver, DLS math, joint limits, planner, and RRT fallback are identical o
 the arm command channel (`group` vs `trajectory`) and the cloud **source** (RealSense vs
 Gazebo) differ. That's by design: the planner and RRT fallback already run on this hardware
 launch unchanged; the only missing piece is the RealSense feeding the cloud.
+
+---
+
+## Pick-and-Place Mission
+
+Full reference: **[PICK_PLACE_MISSION.md](PICK_PLACE_MISSION.md)**.
+
+```bash
+# Terminal 1 -- the whole mission stack
+docker compose run --rm --service-ports rx150-hardware bash -lc \
+  "bash /workspaces/bcr_arm/docker/setup_workspace.sh && set +u && \
+   source /workspaces/bcr_arm/install/setup.bash && \
+   ros2 launch bcr_arm_rx150 rx150_pick_place.launch.py carry_level:=true"
+
+# Terminal 2 -- keyboard control (s = start, x = stop, r = restart, q = quit)
+docker compose exec -it rx150-hardware bash -lc \
+  "source /workspaces/bcr_arm/install/setup.bash && \
+   ros2 run bcr_arm_rx150 mission_keyboard"
+```
+
+**Do not trust the first physical grasp.** The gripper open/closed endpoints
+(`_HW_SERVO_CLOSED` 0.6 / `_HW_SERVO_OPEN` 1.5 in `rx150_gripper_controller.py`) are
+unverified placeholders in servo radians, and `grasp_value` interpolates between them.
+Verify those on the arm first. Vision and the sweep are also still stubs -- see
+PICK_PLACE_MISSION.md §6.

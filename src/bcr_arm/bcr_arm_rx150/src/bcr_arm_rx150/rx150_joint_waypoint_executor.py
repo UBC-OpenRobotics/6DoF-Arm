@@ -25,6 +25,7 @@ import numpy as np
 import rclpy
 from rclpy.node import Node
 from sensor_msgs.msg import JointState
+from std_msgs.msg import Empty, String
 from trajectory_msgs.msg import JointTrajectory
 
 
@@ -41,6 +42,9 @@ class Rx150JointWaypointExecutor(Node):
         self.declare_parameter('publish_period_sec', 0.2)
         self.declare_parameter('stuck_waypoint_warn_sec', 3.0)
         self.declare_parameter('stuck_waypoint_log_period_sec', 2.0)
+        self.declare_parameter('stuck_waypoint_abort_sec', 12.0)
+        self.declare_parameter('status_topic', '/motion/status')
+        self.declare_parameter('cancel_topic', '/motion/cancel')
 
         self._joint_state_topic = str(self.get_parameter('joint_state_topic').value)
         self._joint_path_topic = str(self.get_parameter('joint_path_topic').value)
@@ -57,6 +61,9 @@ class Rx150JointWaypointExecutor(Node):
         self._stuck_waypoint_log_period_sec = max(
             0.1, float(self.get_parameter('stuck_waypoint_log_period_sec').value)
         )
+        self._stuck_waypoint_abort_sec = max(
+            0.0, float(self.get_parameter('stuck_waypoint_abort_sec').value)
+        )
 
         self._joint_names = list(rx150_kinematics.JOINT_NAMES)
 
@@ -69,8 +76,18 @@ class Rx150JointWaypointExecutor(Node):
 
         self.create_subscription(JointState, self._joint_state_topic, self._joint_state_cb, 10)
         self.create_subscription(JointTrajectory, self._joint_path_topic, self._path_cb, 10)
+        # Hard stop: drop whatever joint path is running (mission stop/restart).
+        self.create_subscription(
+            Empty,
+            str(self.get_parameter('cancel_topic').value),
+            self._cancel_cb,
+            10,
+        )
         self._command_pub = self.create_publisher(
             JointState, self._joint_command_topic, 10
+        )
+        self._status_pub = self.create_publisher(
+            String, str(self.get_parameter('status_topic').value), 10
         )
         self.create_timer(self._publish_period_sec, self._timer_cb)
 
@@ -78,6 +95,25 @@ class Rx150JointWaypointExecutor(Node):
             'RX-150 joint waypoint executor listening on %s; commanding %s'
             % (self._joint_path_topic, self._joint_command_topic)
         )
+
+    def _cancel_cb(self, _msg: Empty) -> None:
+        if not self._active_waypoints:
+            self.get_logger().info('Cancel received; no joint path was running.')
+            return
+        remaining = len(self._active_waypoints) - self._current_waypoint_index
+        self.get_logger().warning(
+            'Cancel received: discarding %d remaining joint waypoint(s).' % remaining
+        )
+        self._active_waypoints = []
+        self._current_waypoint_index = 0
+        self._last_published_index = -1
+        self._active_waypoint_publish_time_sec = None
+        self._last_stuck_log_time_sec = None
+        self._emit('joint:aborted')
+
+    def _emit(self, event: str) -> None:
+        """Publish a motion lifecycle event (joint:complete / joint:aborted)."""
+        self._status_pub.publish(String(data=event))
 
     def _joint_state_cb(self, msg: JointState) -> None:
         positions = dict(zip(msg.name, msg.position))
@@ -131,6 +167,23 @@ class Rx150JointWaypointExecutor(Node):
         joint_error = float(np.max(np.abs(target_q - self._current_q)))
 
         self._maybe_log_stuck_waypoint(joint_error)
+        if self._waypoint_abort_due():
+            self.get_logger().error(
+                'Aborting joint path: waypoint %d/%d not reached after %.1f s '
+                '(max joint error %.4f rad); discarding the rest.'
+                % (
+                    self._current_waypoint_index + 1,
+                    len(self._active_waypoints),
+                    self._stuck_waypoint_abort_sec,
+                    joint_error,
+                )
+            )
+            self._active_waypoints = []
+            self._last_published_index = -1
+            self._active_waypoint_publish_time_sec = None
+            self._last_stuck_log_time_sec = None
+            self._emit('joint:aborted')
+            return
 
         if joint_error <= self._waypoint_joint_tolerance:
             self._current_waypoint_index += 1
@@ -140,6 +193,7 @@ class Rx150JointWaypointExecutor(Node):
                 self._last_published_index = -1
                 self._active_waypoint_publish_time_sec = None
                 self._last_stuck_log_time_sec = None
+                self._emit('joint:complete')
                 return
             target_q = self._active_waypoints[self._current_waypoint_index]
             self._active_waypoint_publish_time_sec = None
@@ -190,6 +244,15 @@ class Rx150JointWaypointExecutor(Node):
                 elapsed_sec,
             )
         )
+
+    def _waypoint_abort_due(self) -> bool:
+        if (
+            self._stuck_waypoint_abort_sec <= 0.0
+            or self._active_waypoint_publish_time_sec is None
+        ):
+            return False
+        elapsed = self._clock_now_sec() - self._active_waypoint_publish_time_sec
+        return elapsed >= self._stuck_waypoint_abort_sec
 
     def _clock_now_sec(self) -> float:
         now_msg = self.get_clock().now().to_msg()
