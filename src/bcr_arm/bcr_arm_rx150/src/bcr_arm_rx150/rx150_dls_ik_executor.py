@@ -11,7 +11,12 @@ import numpy as np
 import rclpy
 from rclpy.node import Node
 from sensor_msgs.msg import JointState
+from std_msgs.msg import Bool, Empty, String
 from trajectory_msgs.msg import JointTrajectory, JointTrajectoryPoint
+
+# The gripper's local "up" -- the axis a carried cup stands along. Level-carry
+# holds this against world up; everything else about the wrist stays free.
+_GRIPPER_UP_AXIS = np.array([0.0, 0.0, 1.0])
 
 
 class Rx150DlsIkExecutor(Node):
@@ -58,6 +63,10 @@ class Rx150DlsIkExecutor(Node):
         self.declare_parameter('neutral_retry_joint_tolerance', 0.08)
         self.declare_parameter('joint_command_topic', '/rx150/joint_command')
         self.declare_parameter('joint_command_time_sec', 0.6)
+        self.declare_parameter('carry_level_topic', '/motion/carry_level')
+        self.declare_parameter('max_carry_tilt_deg', 10.0)
+        self.declare_parameter('status_topic', '/motion/status')
+        self.declare_parameter('cancel_topic', '/motion/cancel')
 
         self._world_frame = self.get_parameter('world_frame').value
         self._target_topic = self.get_parameter('target_topic').value
@@ -149,7 +158,6 @@ class Rx150DlsIkExecutor(Node):
         self._joint_command_time_sec = max(
             0.0, float(self.get_parameter('joint_command_time_sec').value)
         )
-        .
         self._tool_offset = np.array(
             [
                 float(self.get_parameter('tool_offset_x').value),
@@ -210,8 +218,29 @@ class Rx150DlsIkExecutor(Node):
             1.0 / self._servo_rate_hz, self._servo_timer_callback
         )
 
+        self._carry_level_active = False
+        self._max_carry_tilt_rad = np.radians(
+            max(0.0, float(self.get_parameter('max_carry_tilt_deg').value))
+        )
+        self._status_pub = self.create_publisher(
+            String, str(self.get_parameter('status_topic').value), 10
+        )
+
         self._oneshot = oneshot_point is not None or oneshot_pose is not None
         if not self._oneshot:
+            self.create_subscription(
+                Bool,
+                str(self.get_parameter('carry_level_topic').value),
+                self._carry_level_callback,
+                10,
+            )
+            # Hard stop: forget the servo target so the arm holds position
+            self.create_subscription(
+                Empty,
+                str(self.get_parameter('cancel_topic').value),
+                self._cancel_callback,
+                10,
+            )
             self.create_subscription(
                 PointStamped, self._target_topic, self._target_callback, 10
             )
@@ -389,12 +418,61 @@ class Rx150DlsIkExecutor(Node):
                 self._clear_target()
             return
 
+        carry_tilt_rad = self._carry_tilt_rad(orientation_error_norm)
+        if (
+            self._carry_level_active
+            and self._max_carry_tilt_rad > 0.0
+            and carry_tilt_rad > self._max_carry_tilt_rad
+        ):
+            self.get_logger().error(
+                'Refusing target: level-carry is active and the best solve tilts the '
+                'gripper %.1f deg from vertical (ceiling %.1f deg). Not commanding it '
+                '-- a carried object would tip. Position error would have been %.4f m.'
+                % (
+                    np.degrees(carry_tilt_rad),
+                    np.degrees(self._max_carry_tilt_rad),
+                    position_error_norm,
+                )
+            )
+            self._status_pub.publish(String(data='ik:tilt_exceeded'))
+            self._clear_target()
+            return
+
         self._publish_trajectory(q_command, self._goal_time_sec)
         self.get_logger().info(
             'Published solved RX-150 joint target. Expected final position error: %.4f m, '
             'orientation error: %.4f rad'
             % (position_error_norm, orientation_error_norm)
         )
+
+    def _carry_level_callback(self, msg: Bool) -> None:
+        requested = bool(msg.data)
+        if requested == self._carry_level_active:
+            return
+        self._carry_level_active = requested
+        cfg = self._solver.config
+        if requested:
+            cfg.orientation_mode = 'upright_free_yaw'
+            cfg.tool_axis = _GRIPPER_UP_AXIS.copy()
+        else:
+            cfg.orientation_mode = self._orientation_mode
+            cfg.tool_axis = self._tool_axis.copy()
+        self.get_logger().info(
+            'Level-carry guard %s (tilt ceiling %.1f deg, yaw free).'
+            % (
+                'ARMED' if requested else 'disarmed',
+                np.degrees(self._max_carry_tilt_rad),
+            )
+        )
+
+    def _carry_tilt_rad(self, orientation_error_norm: float) -> float:
+        """True tilt from vertical for a carry solve.
+
+        While carrying, the orientation error is an axis-alignment cross product
+        whose magnitude is sin(tilt), not the angle itself -- convert it back so
+        the ceiling is compared against real degrees.
+        """
+        return float(np.arcsin(np.clip(orientation_error_norm, 0.0, 1.0)))
 
     def _solve_target_configuration(
         self, q_seed: np.ndarray
@@ -462,6 +540,12 @@ class Rx150DlsIkExecutor(Node):
         target_point.time_from_start.nanosec = nanosec
         msg.points.append(target_point)
         self._trajectory_pub.publish(msg)
+
+    def _cancel_callback(self, _msg: Empty) -> None:
+        if self._target_position is None and not self._pending_solve:
+            return
+        self.get_logger().warning('Cancel received: dropping the active IK target.')
+        self._clear_target()
 
     def _clear_target(self) -> None:
         self._target_position = None
