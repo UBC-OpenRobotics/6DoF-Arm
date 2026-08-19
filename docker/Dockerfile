@@ -37,6 +37,8 @@ RUN pip3 install --no-cache-dir \
     open3d \
     "numpy<2"
 
+RUN pip3 install --no-cache-dir setuptools==58.2.0
+
 # RQT and common plugins for debugging and visualization in the dev stage
 RUN apt-get update && apt-get install -y \
     ros-humble-rqt \

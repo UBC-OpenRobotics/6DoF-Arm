@@ -28,7 +28,7 @@ class Localization3DNode(Node):
         self.declare_parameter('output_topic', '/perception/detections_3d')
         self.declare_parameter('marker_topic', '/perception/markers')
         self.declare_parameter('depth_scale', 0.001)  # RealSense default: mm to meters
-        self.declare_parameter('target_frame', 'base_link')
+        self.declare_parameter('target_frame', 'rx150/base_link')
 
         #input topics
         det_topic = self.get_parameter('detection_topic').value

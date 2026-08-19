@@ -23,8 +23,7 @@ setup(
             'localization_3d_node = arm_perception.localization_3d_node:main',
             'webcam_demo_node = arm_perception.webcam_demo_node:main',
             'color_preprocessing_node = arm_perception.color_preprocessing_node:main',
-            'get_3d_point_action_node = arm_perception.get_3d_point_action_node:main',
-            'get_3d_point_client_node = arm_perception.get_3d_point_client_node:main',
+            'get_3d_point_node = arm_perception.get_3d_point_node:main',
             'mapping_node = arm_perception.mapping_node:main'
         ],
     },

@@ -10,7 +10,7 @@ test: images/test
 
 nc: 5
 names:
-  0: cups
+  0: cup
   1: canister_nozzle
   2: fill_marker
   3: serve_marker

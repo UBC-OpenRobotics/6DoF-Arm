@@ -18,9 +18,10 @@ import rclpy
 from rclpy.node import Node
 from rclpy.qos import qos_profile_sensor_data
 from rclpy.time import Time
+
 from sensor_msgs.msg import PointCloud2
 from sensor_msgs_py import point_cloud2
-from std_srvs.srv import Trigger
+
 from tf2_ros import (
     ConnectivityException,
     ExtrapolationException,
@@ -29,7 +30,7 @@ from tf2_ros import (
 )
 from tf2_ros.buffer import Buffer
 from tf2_ros.transform_listener import TransformListener
-from std_msgs.msg import Header
+from std_msgs.msg import Header, Empty
 
 #
 # Stand-alone helper functions.
@@ -270,8 +271,10 @@ class MappingNode(Node):
     the Motion team's planning pipeline.
     """
 
-    INPUT_TOPIC = "/camera/camera/depth/color/points" #TODO: this or /camera/camera/aligned_depth_to_color/points?
-    OUTPUT_TOPIC = "/perception/point_cloud"
+    INPUT_TOPIC = "/camera/camera/depth/color/points"
+    OUTPUT_TOPIC = "/planning/point_cloud"
+    START_TOPIC = "/sweep/start" #TODO: make a wait function to start
+    STOP_TOPIC = "/sweep/stop"
 
     def __init__(self) -> None:
         super().__init__("mapping_node")
@@ -287,6 +290,20 @@ class MappingNode(Node):
         self._collected_clouds: List[np.ndarray] = []
         self._map_built = False
 
+        self._start_sub = self.create_subscription(
+            Empty,
+            self.START_TOPIC,
+            self._start_callback,
+            qos_profile_sensor_data,
+        )
+
+        self._stop_sub = self.create_subscription(
+            Empty,
+            self.STOP_TOPIC,
+            self._stop_callback,
+            qos_profile_sensor_data,
+        )
+
         self._cloud_sub = self.create_subscription(
             PointCloud2,
             self.INPUT_TOPIC,
@@ -294,20 +311,21 @@ class MappingNode(Node):
             qos_profile_sensor_data,
         )
 
+        #qos_profile_sensor_data is for high-frequency sensor data like point clouds, images, and IMU readings. It prioritizes low latency and best-effort delivery
+
         self._map_pub = self.create_publisher(PointCloud2, self.OUTPUT_TOPIC, 10)
 
-        # A service lets Planning explicitly
-        # signal "the scan sweep is finished, build the map now" once all
-        # predefined scan poses have been visited.
-        # TODO: make srv interface in arm_interfaces package
-        self._build_map_srv = self.create_service(
-            Trigger, "~/build_map", self._build_map_service_callback
-        ) 
+        # # A service lets Planning explicitly
+        # # signal "the scan sweep is finished, build the map now" once all
+        # # predefined scan poses have been visited.
+        
+        # self._build_map_srv = self.create_service(
+        #     Trigger, "~/build_map", self._build_map_service_callback
+        # ) 
 
         self.get_logger().info(
             f"MappingNode initialized. Subscribed to '{self.INPUT_TOPIC}', "
-            f"publishing merged map on '{self.OUTPUT_TOPIC}' once "
-            f"'~/build_map' is triggered."
+            f"publishing merged map on '{self.OUTPUT_TOPIC}'. "
         )
 
     # ------------------------------------------------------------------ #
@@ -316,13 +334,14 @@ class MappingNode(Node):
 
     def _declare_parameters(self) -> None:
         """Declare all configurable ROS2 parameters with their defaults."""
-        self.declare_parameter("target_frame", "base_link")
+        self.declare_parameter("target_frame", "rx150/base_link")
         self.declare_parameter("voxel_size", 0.01) 
         self.declare_parameter("statistical_nb_neighbors", 20)
         self.declare_parameter("statistical_std_ratio", 2.0)
         self.declare_parameter("radius_outlier_radius", 0.02)
         self.declare_parameter("radius_outlier_min_neighbors", 10)
         self.declare_parameter("enable_radius_outlier_removal", True)
+        
 
         # Workspace crop bounds (meters, expressed in target_frame).
         # TODO: remove these, might not be necessary if we have walls
@@ -431,7 +450,7 @@ class MappingNode(Node):
         )
 
     def _lookup_transform(self, source_frame: str, stamp) -> Optional[object]:
-        """Look up the TF2 transform from ``source_frame`` to ``target_frame`` or ``base_link``.
+        """Look up the TF2 transform from ``source_frame`` to ``target_frame``.
 
         Args:
             source_frame: The frame the incoming cloud is expressed in. -> camera_optical_frame
@@ -460,28 +479,47 @@ class MappingNode(Node):
     # Map-building trigger.
     # ------------------------------------------------------------------ #
 
-    def _build_map_service_callback(
-        self, request: Trigger.Request, response: Trigger.Response
-    ) -> Trigger.Response:
-        """Service handler that triggers map building on demand.
+    def _start_callback(self, msg: Empty) -> None:
+        """Callback to start the mapping process."""
+        del msg  # Empty message carries no data.
+        self.get_logger().info("Mapping sweep started. Accumulating clouds...")
 
-        Intended to be called once Motion has finished sweeping through all
-        predefined scan poses.
-        """
-        del request  # Trigger.Request carries no fields.
+    def _stop_callback(self, msg: Empty) -> None:
+        """Callback to stop the mapping process and build the map."""
+        del msg  # Empty message carries no data.
+        self.get_logger().info("Mapping sweep stopped. Building map...")
 
         if not self._collected_clouds:
-            response.success = False
-            response.message = "No point clouds have been collected yet."
-            self.get_logger().warning(response.message)
-            return response
+            self.get_logger().warning("No point clouds have been collected yet. Cannot build map.")
 
-        self.build_map()
-        response.success = True
-        response.message = (
-            f"Obstacle map built and published on '{self.OUTPUT_TOPIC}'."
-        )
-        return response
+        else:
+            self.build_map()
+            self.get_logger().info(
+                f"Obstacle map built and published on '{self.OUTPUT_TOPIC}'."
+            )
+
+    # def _build_map_service_callback(
+    #     self, request: Trigger.Request, response: Trigger.Response
+    # ) -> Trigger.Response:
+    #     """Service handler that triggers map building on demand.
+
+    #     Intended to be called once Motion has finished sweeping through all
+    #     predefined scan poses.
+    #     """
+    #     del request  # Trigger.Request carries no fields.
+
+    #     if not self._collected_clouds:
+    #         response.success = False
+    #         response.message = "No point clouds have been collected yet."
+    #         self.get_logger().warning(response.message)
+    #         return response
+
+    #     self.build_map()
+    #     response.success = True
+    #     response.message = (
+    #         f"Obstacle map built and published on '{self.OUTPUT_TOPIC}'."
+    #     )
+    #     return response
 
     # ------------------------------------------------------------------ #
     # Map building pipeline -- runs once the scan sweep is complete.

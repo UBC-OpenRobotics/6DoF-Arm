@@ -29,11 +29,4 @@ services:
         ros2 launch arm_perception perception.launch.py
       "
 
-#in another terminal, run this command for TF2: ros2 launch bcr_arm_description bcr_arm_description.launch.py
-
-## ros2 launch arm_perception perception.launch.py
-## ros2 launch arm_bringup sim.launch.py
-## ros2 launch arm_perception webcam_demo.launch.py
-
-
       

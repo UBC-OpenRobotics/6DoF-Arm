@@ -14,10 +14,10 @@ def generate_launch_description():
     yolo_config = os.path.join(pkg_dir, 'config', 'yolo_params.yaml')
 
     return LaunchDescription([
-        DeclareLaunchArgument(
-            'use_sim_time',
-            default_value='true',
-        ),
+        # DeclareLaunchArgument(
+        #     'use_sim_time',
+        #     default_value='true',
+        # ),
         DeclareLaunchArgument(
             'enable_camera',
             default_value='true',
@@ -30,26 +30,22 @@ def generate_launch_description():
         ),
         DeclareLaunchArgument(
             'planning_frame', 
-            default_value='camera_base_link'
+            default_value='rx150/base_link',
         ),
 
-        # use camera_base_link for testing vision with realsense bag files (without running the arm live)
-        #TODO: confirm planning_frame (namespace? rx150/base_link?)
-
-        # # RealSense camera driver (from upstream package)
-        # IncludeLaunchDescription(
-        #     PythonLaunchDescriptionSource([
-        #         get_package_share_directory('realsense2_camera'),
-        #         '/launch/rs_launch.py',
-        #     ]),
-        #     launch_arguments={
-        #         'align_depth.enable': 'true',
-        #         'pointcloud.enable': 'true',
-        #         'rosbag_filename': '/ros2_ws/bag_files/test1_uncompressed.bag',
-        #         'serial_no': LaunchConfiguration('camera_serial_no'),
-        #     }.items(),
-        #     condition=IfCondition(LaunchConfiguration('enable_camera')),
-        # ),
+        # RealSense camera driver (from upstream package)
+        IncludeLaunchDescription(
+            PythonLaunchDescriptionSource([
+                get_package_share_directory('realsense2_camera'),
+                '/launch/rs_launch.py',
+            ]),
+            launch_arguments={
+                'align_depth.enable': 'true',
+                'pointcloud.enable': 'true',
+                'serial_no': LaunchConfiguration('camera_serial_no'),
+            }.items(),
+            condition=IfCondition(LaunchConfiguration('enable_camera')),
+        ),
 
         # # RealSense health monitor --> commented out for now it's causing conflict with the realsense driver
         # Node(
@@ -102,24 +98,22 @@ def generate_launch_description():
             output='screen',
         ),
 
-        #Get 3D point action server
         Node(
             package='arm_perception',
-            executable='get_3d_point_action_node',
-            name='get_3d_point_action_node',
+            executable='get_3d_point_node',
+            name='get_3d_point_node',
             output='screen',
         ),
 
-        # Static transform publisher to connect TF tree between camera_base_link (from the arm's tree) and camera_link (from the realsense driver's tree)
+        
+        #Static transform publisher to connect the arm's TF tree and the realsense camera own TF tree
+        #TODO: confirm camera_base_link name from the arm's TF tree and realsense driver camera_link name from the realsense TF tree
         Node(
             package='tf2_ros',
             executable='static_transform_publisher',
-            arguments=['0', '0', '0', '0', '0', '0', 'camera_base_link', 'camera_link'],
+            arguments=['0', '0', '0', '0', '0', '0', 'rx150/gripper_camera_optical_link', 'camera_depth_optical_frame'],
             output='screen',
         ),
-
-        #TODO: confirm camera_base_link name and realsense driver camera_link name
-        #arguments=['0', '0', '0', '0', '0', '0', '<real_arm_side_camera_base_link_name>', '<real_driver_side_camera_link_name>'],
 
         #Point cloud mapping node
         Node(
@@ -130,6 +124,7 @@ def generate_launch_description():
                 'depth_scale': 0.001,
                 'enable_radius_outlier_removal': True,
                 'target_frame' : LaunchConfiguration('planning_frame'),
+                'voxel_size': 0.005, # the higher the voxel size, the more downsampling occurs
             }],
             output='screen',
         ),
