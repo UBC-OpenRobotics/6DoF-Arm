@@ -1,0 +1,5 @@
+string object_class
+geometry_msgs/Pose target_pose
+---
+bool success
+string message

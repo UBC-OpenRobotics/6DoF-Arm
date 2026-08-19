@@ -1,4 +1,4 @@
-src/bcr_arm/bcr_arm_rx150/urdf/rx150_gripper_depth_camera.urdf.xacro # RX-150 Hardware Stack — Docker Command Reference
+# RX-150 Hardware Stack — Docker Command Reference
 
 Command reference for building, launching, and driving the **physical** RX-150 DLS stack
 (`rx150_dls_stack.launch.py`) through the workspace's Docker Compose setup. This is the
