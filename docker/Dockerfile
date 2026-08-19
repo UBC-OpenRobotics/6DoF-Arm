@@ -13,6 +13,8 @@ RUN apt-get update && apt-get install -y \
     ros-${ROS_DISTRO}-tf2-ros \
     ros-${ROS_DISTRO}-tf2-geometry-msgs \
     ros-${ROS_DISTRO}-rmw-cyclonedds-cpp \
+    libgl1 \
+    libgomp1 \
     && rm -rf /var/lib/apt/lists/*
 
 # MoveIt 2
@@ -30,9 +32,18 @@ RUN apt-get update && apt-get install -y \
 
 # Python dependencies (CPU-only for M1 Docker)
 RUN pip3 install --no-cache-dir \
-    ultralytics==8.1.0 \
+    ultralytics==8.4.67 \
     opencv-python-headless \
+    open3d \
     "numpy<2"
+
+RUN pip3 install --no-cache-dir setuptools==58.2.0
+
+# RQT and common plugins for debugging and visualization in the dev stage
+RUN apt-get update && apt-get install -y \
+    ros-humble-rqt \
+    ros-humble-rqt-common-plugins \
+    && rm -rf /var/lib/apt/lists/*
 
 # Visualization tools
 FROM base AS viz
@@ -44,6 +55,12 @@ RUN apt-get update && apt-get install -y \
 # Development stage
 FROM viz AS dev
 WORKDIR /ros2_ws
+
+# Install visualization tools in the development stage for now for debugging and vision development purposes. Remove this later to separate RViz and have it in the viz stage only.
+RUN apt-get update && apt-get install -y \
+    ros-${ROS_DISTRO}-rviz2 \
+    ros-${ROS_DISTRO}-joint-state-publisher-gui \
+    && rm -rf /var/lib/apt/lists/* 
 
 COPY src/ src/
 

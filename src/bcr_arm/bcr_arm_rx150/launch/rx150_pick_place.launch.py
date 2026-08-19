@@ -8,6 +8,7 @@ workflow:
   - `vision_placeholder`  (stub for the teammate-owned vision -- swap out later);
   - `sweep_placeholder`   (canned obstacle cloud until the RealSense sweep exists);
   - `rx150_pick_place_orchestrator` (the conductor / state machine).
+  - the full vision stack via perception.launch.py (only launched if the stubs are disabled).
 
 Nothing moves on launch: the orchestrator waits for a start trigger unless
 `autostart:=true`. Start it with:
@@ -23,7 +24,7 @@ Args:
 
 from launch import LaunchDescription
 from launch.actions import DeclareLaunchArgument, IncludeLaunchDescription
-from launch.conditions import IfCondition
+from launch.conditions import IfCondition, UnlessCondition
 from launch.launch_description_sources import PythonLaunchDescriptionSource
 from launch.substitutions import LaunchConfiguration, PathJoinSubstitution
 from launch_ros.actions import Node
@@ -36,8 +37,8 @@ def generate_launch_description():
 
     return LaunchDescription([
         DeclareLaunchArgument('autostart', default_value='false'),
-        DeclareLaunchArgument('use_vision_stub', default_value='true'),
-        DeclareLaunchArgument('use_sweep_stub', default_value='true'),
+        DeclareLaunchArgument('use_vision_stub', default_value='false'),
+        DeclareLaunchArgument('use_sweep_stub', default_value='false'),
         DeclareLaunchArgument(
             'carry_level', default_value='false',
             description='Keep the gripper level so a grasped cup cannot tip.',
@@ -103,5 +104,20 @@ def generate_launch_description():
                 'grasp_value': ParameterValue(
                     LaunchConfiguration('grasp_value'), value_type=str),
             }],
+        ),
+
+        # Full vision/perception stack (only launched if use_vision_stub:=false).
+        IncludeLaunchDescription(
+            PythonLaunchDescriptionSource([
+                PathJoinSubstitution([
+                    FindPackageShare('arm_perception'),
+                    'launch',
+                    'perception.launch.py',
+                ])
+            ]),
+            condition=UnlessCondition(LaunchConfiguration('use_vision_stub')),
+            launch_arguments={
+                'planning_frame': planning_frame,
+            }.items(),
         ),
     ])

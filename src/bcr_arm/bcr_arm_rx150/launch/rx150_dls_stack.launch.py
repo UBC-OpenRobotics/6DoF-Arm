@@ -64,9 +64,10 @@ def generate_launch_description():
         # Where the RealSense driver publishes its cloud (the relay's input). The
         # driver itself is the in-progress hardware port. Start it separately
         # (see HARDWARE_COMMANDS.md); until then the planner idles with no cloud.
+        # depth topic from the real realsense camera driver is camera/camera/depth/color/points
         DeclareLaunchArgument(
-            'camera_points_topic', default_value='/camera/depth/color/points'
-        ),
+            'camera_points_topic', default_value='camera/camera/depth/color/points'
+        ), 
 
         IncludeLaunchDescription(
             PythonLaunchDescriptionSource([

@@ -1,0 +1,9 @@
+string class_name
+---
+bool success
+string message
+float32 confidence
+geometry_msgs/Point position_3d
+---
+string current_status
+

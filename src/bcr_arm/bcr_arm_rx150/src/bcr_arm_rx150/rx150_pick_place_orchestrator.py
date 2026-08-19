@@ -90,6 +90,7 @@ class Rx150PickPlaceOrchestrator(Node):
         self.declare_parameter('joint_state_topic', '/rx150/joint_states')
         self.declare_parameter('point_cloud_topic', '/planning/point_cloud')
         self.declare_parameter('sweep_request_topic', '/sweep/start')
+        self.declare_parameter('sweep_stop_topic', '/sweep/stop')
         self.declare_parameter('vision_request_topic', '/vision/find_request')
         self.declare_parameter('carry_level_topic', '/motion/carry_level')
         # Gripper actions wait for the arm to actually stop first: grabbing or
@@ -203,6 +204,9 @@ class Rx150PickPlaceOrchestrator(Node):
         )
         self._sweep_pub = self.create_publisher(
             Empty, str(gp('sweep_request_topic').value), 10
+        )
+        self._sweep_stop_pub = self.create_publisher(
+            Empty, str(gp('sweep_stop_topic').value), 10
         )
         self._vision_req_pub = self.create_publisher(
             String, str(gp('vision_request_topic').value), 10
@@ -651,9 +655,16 @@ class Rx150PickPlaceOrchestrator(Node):
         # Phase 1: sweep -> obstacle map on /planning/point_cloud.
         self._phase('[1/10] Sweep: requesting obstacle map.')
         self._sweep_pub.publish(Empty())
+
+        #--sweep motion--
+
+        self._sweep_stop_pub.publish(Empty())
+        
         if not self._wait_for_cloud():
             return self._abort('no obstacle map on point-cloud topic after sweep')
         self.get_logger().info('Obstacle map present (%d points).' % self._cloud_points)
+
+        
 
         # Phase 2: find the cup.
         self._phase('[2/10] Vision: locate cup.')
