@@ -66,6 +66,14 @@ def generate_launch_description():
         # (see HARDWARE_COMMANDS.md); until then the planner idles with no cloud.
         # depth topic from the real realsense camera driver is camera/camera/depth/color/points
         DeclareLaunchArgument(
+            'external_urdf_loc',
+            default_value=PathJoinSubstitution([
+                FindPackageShare('bcr_arm_rx150'),
+                'urdf',
+                'rx150_realsense_camera.urdf.xacro',
+            ]),
+        ),
+        DeclareLaunchArgument(
             'camera_points_topic', default_value='camera/camera/depth/color/points'
         ), 
 
@@ -81,6 +89,7 @@ def generate_launch_description():
                 'robot_name': LaunchConfiguration('robot_name'),
                 'use_rviz': LaunchConfiguration('use_rviz'),
                 'load_configs': LaunchConfiguration('load_configs'),
+                'external_urdf_loc': LaunchConfiguration('external_urdf_loc'),
             }.items(),
         ),
 

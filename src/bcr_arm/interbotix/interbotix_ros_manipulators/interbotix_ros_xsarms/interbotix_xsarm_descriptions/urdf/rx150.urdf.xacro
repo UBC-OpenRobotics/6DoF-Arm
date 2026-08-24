@@ -587,12 +587,10 @@
           </visual>
           <collision>
             <origin
-              rpy="${pi} ${pi} 0"
-              xyz="0 0.005 0"/>
+              rpy="0 0 0"
+              xyz="0.01555 -0.0030 0"/>
             <geometry>
-              <mesh
-                filename="${mesh_directory}/gripper_finger.stl"
-                scale="0.001 0.001 0.001"/>
+              <box size="0.0553 0.0160 0.0290"/>
             </geometry>
           </collision>
           <inertial>
@@ -649,12 +647,10 @@
           </visual>
           <collision>
             <origin
-              rpy="0 ${pi} 0"
-              xyz="0 -0.005 0"/>
+              rpy="0 0 0"
+              xyz="0.01555 0.0030 0"/>
             <geometry>
-              <mesh
-                filename="${mesh_directory}/gripper_finger.stl"
-                scale="0.001 0.001 0.001"/>
+              <box size="0.0553 0.0160 0.0290"/>
             </geometry>
           </collision>
           <inertial>

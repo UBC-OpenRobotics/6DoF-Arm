@@ -10,9 +10,12 @@ import numpy as np
 import rclpy
 from geometry_msgs.msg import TransformStamped
 from rclpy.node import Node
-from rclpy.qos import qos_profile_sensor_data
+from rclpy.qos import HistoryPolicy, QoSProfile, qos_profile_sensor_data
 from sensor_msgs.msg import PointCloud2, PointField
 from sensor_msgs_py import point_cloud2
+from rclpy.callback_groups import MutuallyExclusiveCallbackGroup
+from rclpy.duration import Duration as RclpyDuration
+from rclpy.executors import MultiThreadedExecutor
 from tf2_ros import Buffer, StaticTransformBroadcaster, TransformListener
 
 
@@ -35,6 +38,19 @@ class ScenePointCloudRelay(Node):
         self.declare_parameter('broadcast_static_tf', True)
         self.declare_parameter('max_range', 5.0)
         self.declare_parameter('stall_timeout_sec', 2.0)
+        # Fall back to the newest transform when the one matching the cloud's
+        # own stamp is unavailable. OFF: a wrongly placed obstacle is worse than
+        # a missing one, because it makes the planner refuse clear paths. Turn
+        # it on only to keep a stack limping while a clock mismatch is fixed.
+        self.declare_parameter('allow_latest_tf', False)
+        # How long to wait for the transform matching a cloud's stamp. A cloud
+        # routinely arrives a millisecond or two BEFORE the TF sample covering
+        # it -- the camera and the joint publisher are not synchronised, so the
+        # newest transform can be marginally older than the newest image, and
+        # tf2 refuses to extrapolate forward. Without a short wait every cloud is
+        # dropped for the sake of a millisecond. Small enough not to stack up
+        # behind a 5 Hz camera.
+        self.declare_parameter('tf_timeout_sec', 0.15)
 
         self._input_topic = str(self.get_parameter('input_topic').value)
         self._output_topic = str(self.get_parameter('output_topic').value)
@@ -56,6 +72,10 @@ class ScenePointCloudRelay(Node):
         )
         self._max_range = max(0.0, float(self.get_parameter('max_range').value))
         self._stall_timeout_sec = max(0.0, float(self.get_parameter('stall_timeout_sec').value))
+        self._allow_latest_tf = bool(self.get_parameter('allow_latest_tf').value)
+        self._tf_timeout = RclpyDuration(
+            seconds=max(0.0, float(self.get_parameter('tf_timeout_sec').value)))
+        self._tf_miss_count = 0
 
         self._rotation = self._euler_to_matrix(
             self._camera_roll,
@@ -64,12 +84,22 @@ class ScenePointCloudRelay(Node):
         )
         self._tf_buffer = Buffer()
         self._tf_listener = TransformListener(self._tf_buffer, self)
+
+        self._cloud_cb_group = MutuallyExclusiveCallbackGroup()
         self._publisher = self.create_publisher(PointCloud2, self._output_topic, 10)
+
+        depth1 = QoSProfile(
+            depth=1,
+            reliability=qos_profile_sensor_data.reliability,
+            durability=qos_profile_sensor_data.durability,
+            history=HistoryPolicy.KEEP_LAST,
+        )
         self.create_subscription(
             PointCloud2,
             self._input_topic,
             self._point_cloud_cb,
-            qos_profile_sensor_data,
+            depth1,
+            callback_group=self._cloud_cb_group,
         )
 
         self._tf_broadcaster: Optional[StaticTransformBroadcaster] = None
@@ -125,13 +155,8 @@ class ScenePointCloudRelay(Node):
 
         source_frame = msg.header.frame_id or self._source_frame
         if source_frame:
-            transform = self._lookup_transform(source_frame)
+            transform = self._lookup_transform(source_frame, msg.header.stamp)
             if transform is None:
-                if self._cb_count % 5 == 1:
-                    self.get_logger().warning(
-                        'TF lookup failed (cb=%d pub=%d) frame=%s'
-                        % (self._cb_count, self._pub_count, source_frame)
-                    )
                 return
             transformed_points = self._transform_points(points, transform)
         else:
@@ -139,7 +164,9 @@ class ScenePointCloudRelay(Node):
 
         cloud_arr = np.ascontiguousarray(transformed_points, dtype=np.float32)
         cloud = PointCloud2()
-        cloud.header.stamp = self.get_clock().now().to_msg()
+        # Carry the CAPTURE stamp through, so downstream can tell when this
+        # geometry was true rather than seeing every cloud as fresh.
+        cloud.header.stamp = msg.header.stamp
         cloud.header.frame_id = self._target_frame
         cloud.height = 1
         cloud.width = cloud_arr.shape[0]
@@ -170,6 +197,24 @@ class ScenePointCloudRelay(Node):
                 % (self._cb_count, self._pub_count, cloud_arr.shape[0])
             )
 
+    def _warn_tf(self, source_frame: str, exc: Exception) -> None:
+        """Explain a TF miss in terms of the thing that usually causes it."""
+        self.get_logger().warning(
+            "No transform '%s' -> '%s' at the cloud's own stamp (%d missed, "
+            'cb=%d pub=%d); dropping it. %s'
+            % (source_frame, self._target_frame, self._tf_miss_count,
+               self._cb_count, self._pub_count, exc),
+            throttle_duration_sec=5.0,
+        )
+        if self._tf_miss_count == 20 and not self.get_parameter(
+                'use_sim_time').value:
+            self.get_logger().error(
+                'Every cloud is being dropped and use_sim_time is FALSE. In '
+                'Gazebo the camera stamps in sim time while this node reads '
+                'the wall clock, so no stamp will ever match. Launch this node '
+                'with use_sim_time:=true.'
+            )
+
     def _watchdog_cb(self) -> None:
         """Warn once if the relay was publishing and has since gone quiet."""
         if not self._first_published or self._stalled:
@@ -185,19 +230,53 @@ class ScenePointCloudRelay(Node):
                 % (elapsed, self._cb_count, self._pub_count)
             )
 
-    def _lookup_transform(self, source_frame: str) -> Optional[np.ndarray]:
+    def _lookup_transform(self, source_frame: str,
+                          stamp) -> Optional[np.ndarray]:
+        """Transform for the moment this cloud was CAPTURED, not for now.
+
+        The camera rides on the arm, so the transform is only meaningful paired
+        with the pose the arm held when the shutter opened. Asking for the newest
+        transform instead pairs a cloud captured mid-slew with the pose the arm
+        ended up in, and the geometry lands in the map rotated by however far the
+        waist travelled in between.
+
+        A stamped lookup only works if this node and the TF publisher agree on
+        what time it is. Gazebo stamps in sim time and publishes /clock, and the
+        interbotix bringup runs robot_state_publisher with use_sim_time, so this
+        node must run with use_sim_time too -- the sim launches set it. Without
+        it the lookup fails on every cloud and the relay goes silent, which is
+        why the failure below is loud.
+
+        Returns None to DROP the cloud rather than transform it wrongly. A
+        missing obstacle is recoverable; a phantom one sitting over the
+        workspace makes the planner refuse paths that are actually clear.
+        """
         try:
             transform = self._tf_buffer.lookup_transform(
                 self._target_frame,
                 source_frame,
-                rclpy.time.Time(),
+                stamp,
+                timeout=self._tf_timeout,
             )
         except Exception as exc:  # noqa: BLE001
-            self.get_logger().warning(
-                "Could not transform scene point cloud from '%s' to '%s': %s"
-                % (source_frame, self._target_frame, exc)
-            )
-            return None
+            self._tf_miss_count += 1
+            if self._allow_latest_tf:
+                try:
+                    transform = self._tf_buffer.lookup_transform(
+                        self._target_frame, source_frame, rclpy.time.Time())
+                except Exception as fallback_exc:  # noqa: BLE001
+                    self._warn_tf(source_frame, fallback_exc)
+                    return None
+                self.get_logger().warning(
+                    'Using the LATEST transform for a cloud stamped %d.%09d -- '
+                    'geometry captured while the arm moved will be placed '
+                    'wrongly. Set allow_latest_tf false once the clocks agree.'
+                    % (stamp.sec, stamp.nanosec),
+                    throttle_duration_sec=10.0,
+                )
+            else:
+                self._warn_tf(source_frame, exc)
+                return None
 
         translation = np.array(
             [
@@ -304,9 +383,17 @@ class ScenePointCloudRelay(Node):
 def main(args=None) -> None:
     rclpy.init(args=args)
     node = ScenePointCloudRelay()
-    rclpy.spin(node)
-    node.destroy_node()
-    rclpy.shutdown()
+
+    executor = MultiThreadedExecutor()
+    executor.add_node(node)
+    try:
+        executor.spin()
+    except KeyboardInterrupt:
+        pass
+    finally:
+        executor.remove_node(node)
+        node.destroy_node()
+        rclpy.shutdown()
 
 
 if __name__ == '__main__':

@@ -82,8 +82,23 @@ class MissionKeyboard(Node):
         if entry is None:
             return True
         label, publisher = entry
+
+        listeners = publisher.get_subscription_count()
         publisher.publish(Empty())
-        self.get_logger().info('%s -> %s' % (label, publisher.topic_name))
+        if listeners == 0:
+            self.get_logger().error(
+                '%s -> %s but NOTHING IS SUBSCRIBED -- the message went nowhere. '
+                'Is the mission stack up ("Idle. Waiting for mission start")? Is '
+                'this terminal in the same container / ROS_DOMAIN_ID? Check with: '
+                'ros2 topic info %s'
+                % (label, publisher.topic_name, publisher.topic_name)
+            )
+        else:
+            self.get_logger().info(
+                '%s -> %s (%d listener%s)'
+                % (label, publisher.topic_name, listeners,
+                   '' if listeners == 1 else 's')
+            )
         return True
 
 

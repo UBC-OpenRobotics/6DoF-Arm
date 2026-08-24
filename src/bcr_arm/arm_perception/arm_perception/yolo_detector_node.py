@@ -32,6 +32,7 @@ class YOLODetectorNode(Node):
         self._bridge = CvBridge() #create a CvBridge instance for converting ROS images to OpenCV format
         self._model = None #to be loaded
         self._latest_frame = None #to be populated
+        self._latest_header = None #header of the latest frame
 
         # Load YOLO model
         try:
@@ -68,15 +69,16 @@ class YOLODetectorNode(Node):
         # Convert ROS Image to OpenCV format and store the latest frame for service use
         frame = self._bridge.imgmsg_to_cv2(msg, desired_encoding='bgr8')
         self._latest_frame = frame
+        self._latest_header = msg.header
 
-        detections = self._run_detection(frame) # returns a list of DetectedObject messages
+        detections = self._run_detection(frame, msg.header) # returns a list of DetectedObject messages
 
         det_array = DetectedObjectArray()
         det_array.header = msg.header
         det_array.objects = detections
         self._det_pub.publish(det_array)
 
-    def _run_detection(self, frame):
+    def _run_detection(self, frame, header=None):
         """Run YOLO inference on a single frame (in OpenCV format)."""
         results = self._model.predict(
             frame,
@@ -92,6 +94,8 @@ class YOLODetectorNode(Node):
                 continue
             for i in range(len(boxes)):
                 det = DetectedObject()
+                if header is not None:
+                    det.header = header
                 det.class_name = self._model.names[int(boxes.cls[i])]
                 det.confidence = float(boxes.conf[i])
 
@@ -107,7 +111,8 @@ class YOLODetectorNode(Node):
         """Service handler for one-shot detection."""
         # if we have a latest frame and the model is loaded, run detection
         if self._latest_frame is not None and self._model is not None:
-            response.objects = self._run_detection(self._latest_frame)
+            response.objects = self._run_detection(
+                self._latest_frame, self._latest_header)
         else:
             self.get_logger().warn('No frame available for detection')
             response.objects = []

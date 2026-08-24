@@ -124,6 +124,9 @@ class RrtConnectPlanner:
 
         # Populated by the most recent plan() call, for the caller to log.
         self.last_stats: dict = {}
+        # Set per plan() call; see the start-in-collision handling there.
+        self._start_config = None
+        self._start_invalid = False
 
     # ------------------------------------------------------------------
     # Public API
@@ -151,11 +154,10 @@ class RrtConnectPlanner:
             'result': 'none',
         }
 
-        # A colliding start or no collision-free goal means no search is needed.
-        if self._invalid(q_start):
-            self.last_stats['result'] = 'start_in_collision'
-            self.last_stats['elapsed_sec'] = time.monotonic() - start_time
-            return None
+        self._start_config = q_start.copy()
+        self._start_invalid = self._invalid(q_start)
+        if self._start_invalid:
+            self.last_stats['start_in_collision'] = True
         valid_goals = [g for g in goals if not self._invalid(g)]
         if not valid_goals:
             self.last_stats['result'] = 'goals_in_collision'
@@ -246,6 +248,15 @@ class RrtConnectPlanner:
         Samples the straight configuration-space segment at ``check_step``
         resolution, endpoints included.
         """
+        if getattr(self, '_start_invalid', False) and self._invalid(q_from):
+
+            if not self._invalid(q_to):
+                return True
+            if self._start_config is None:
+                return False
+            return (np.linalg.norm(q_to - self._start_config)
+                    > np.linalg.norm(q_from - self._start_config) + 1e-9)
+
         delta = q_to - q_from
         distance = float(np.linalg.norm(delta))
         segment_count = max(1, int(np.ceil(distance / self.check_step)))

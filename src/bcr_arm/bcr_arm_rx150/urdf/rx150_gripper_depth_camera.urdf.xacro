@@ -1,4 +1,45 @@
 <?xml version="1.0"?>
+<!--
+  Gripper-mounted depth camera for the RX-150 in GAZEBO.
+
+  Sim counterpart to rx150_realsense_camera.urdf.xacro (hardware). This one
+  carries a Gazebo <sensor> plugin that fabricates depth; the hardware file
+  only describes where the real camera is bolted.
+
+  The sensor below is modelled on the RealSense D435i actually mounted on the
+  arm (named in arm_perception/package.xml), not a generic depth camera, so
+  that sim fails the same way hardware will.
+
+  Why the COLOUR stream figures are the ones used. The driver runs with
+  align_depth, which reprojects depth into the colour frame, so the colour
+  intrinsics govern both 3D localization and the point cloud.
+
+  D435i colour is 69 x 42 deg on a 16;9 sensor. At 640x480 the driver crops to
+  4;3, giving 54.5 x 42.3 deg. The vertical landing on the datasheet 42 deg is
+  the check that the crop model is right.
+
+  The near clip is the D435i minimum depth (min-Z), about 0.2 m at 848x480 and
+  0.28 m at max resolution. Modelling it matters because the scan posture holds
+  this camera about 0.09 m off the nearest scene surface, so a more permissive
+  near clip would let the sweep resolve things no real D435i can.
+
+  update_rate stays at 5 Hz, well under the D435i 30 Hz. That is a deliberate
+  performance concession, not a fidelity claim, since Gazebo plus YOLO on CPU
+  has to stay usable. Rate does not change what is geometrically visible.
+
+  ##########################################################################
+  KEEP COMMENTS INSIDE <robot> SHORT AND FREE OF A COLON FOLLOWED BY A SPACE.
+  ##########################################################################
+  xacro strips comments outside <robot> (like this one) but PRESERVES the ones
+  inside it. The generated URDF is handed to robot_state_publisher as a string
+  parameter and launch_ros YAML-parses it on the way through, so one "colon
+  space" in a surviving comment kills the whole launch with
+
+      Unable to parse the value of parameter robot_description as yaml
+
+  naming neither this file nor the comment. bcr_arm_rx150/test/
+  test_camera_tf_chain.py asserts against it.
+-->
 <robot xmlns:xacro="http://www.ros.org/wiki/xacro">
 
   <!-- Camera mounted on top of the wrist_rotate servo (the servo closest to the
@@ -43,29 +84,114 @@
 
   <link name="$(arg robot_name)/gripper_camera_optical_link"/>
 
+  <!-- =====================================================================
+       MOUNT REFERENCE CORNER - verification marker, visual only.
+       =====================================================================
+       Marks the datum that the camera mounting measurements are taken FROM,
+       so it can be eyeballed in Gazebo and RViz before any number is trusted.
+       It is NOT the camera and NOT part of the robot. Delete or switch off
+       once the mount pose is agreed.
+
+       The datum as currently understood
+         - the square wrist servo housing, which is this link's own body
+         - its TOP face, the face the camera block sits above, so +z
+         - the corner of that face nearest the LEFT finger, so +x and +y
+
+       Read off gripper.stl in gripper_link coordinates
+         x   0.04300   front face, the end the gripper bar bolts on to
+         y   0.01425   left half width, housing measures 28.5 mm across
+         z   0.03525   top face
+
+       The real top face is chamfered - 24.5 mm across at the very top,
+       widening to 28.5 mm about 2 mm below. The point below is the sharp
+       corner of the idealised box, which is what a caliper reads to.
+
+       Green, not red, only because the camera block above it is already
+       Gazebo/Red and a red dot would vanish against it.
+
+       No collision and no inertia worth the name, so it cannot be hit,
+       grasped, or seen by the depth sensor. Pass show_mount_ref false to
+       drop it entirely.
+  -->
+  <xacro:arg name="show_mount_ref" default="true"/>
+
+  <xacro:if value="$(arg show_mount_ref)">
+
+    <joint name="$(arg robot_name)_mount_ref_corner_joint" type="fixed">
+      <parent link="$(arg robot_name)/gripper_link"/>
+      <child link="$(arg robot_name)/mount_ref_corner"/>
+      <origin xyz="0.04300 0.01425 0.03525" rpy="0 0 0"/>
+    </joint>
+
+    <link name="$(arg robot_name)/mount_ref_corner">
+      <visual>
+        <origin xyz="0 0 0" rpy="0 0 0"/>
+        <geometry>
+          <sphere radius="0.003"/>
+        </geometry>
+        <material name="mount_ref_green">
+          <color rgba="0.0 1.0 0.0 1.0"/>
+        </material>
+      </visual>
+      <inertial>
+        <mass value="0.000001"/>
+        <inertia ixx="1e-9" iyy="1e-9" izz="1e-9" ixy="0" ixz="0" iyz="0"/>
+      </inertial>
+    </link>
+
+    <gazebo reference="$(arg robot_name)/mount_ref_corner">
+      <material>Gazebo/Green</material>
+    </gazebo>
+
+  </xacro:if>
+
+  <!-- Grasp contact for the fingers.
+       ODE resolves a contact from BOTH surfaces, so leaving these at Gazebo's
+       defaults caps the object's friction (it takes the lower mu) and keeps the
+       contact stiff no matter how compliant the object is made. These match the
+       shot glass in rx150_obstacles.world so a squeeze is held rather than
+       resolved explosively. max_vel is the cap on how fast a penetrating
+       contact is pushed apart, which is what decides whether a grasped object
+       stays put or is spat out. -->
+  <xacro:macro name="grasp_contact" params="link">
+    <gazebo reference="${link}">
+      <mu1>1.5</mu1>
+      <mu2>1.5</mu2>
+      <kp>6000.0</kp>
+      <kd>150.0</kd>
+      <minDepth>0.0</minDepth>
+      <maxVel>0.005</maxVel>
+    </gazebo>
+  </xacro:macro>
+  <xacro:grasp_contact link="$(arg robot_name)/left_finger_link"/>
+  <xacro:grasp_contact link="$(arg robot_name)/right_finger_link"/>
+
   <gazebo reference="$(arg robot_name)/gripper_camera_link">
     <material>Gazebo/Red</material>
 
     <sensor name="gripper_camera" type="depth">
       <pose>0 0 0 0 0 0</pose>
       <visualize>false</visualize>
+
+      <!-- D435i colour stream at 640x480. See the file header. -->
       <update_rate>5</update_rate>
       <camera>
-        <horizontal_fov>1.089</horizontal_fov>
+        <horizontal_fov>0.952</horizontal_fov>
         <image>
-          <width>320</width>
-          <height>240</height>
+          <width>640</width>
+          <height>480</height>
           <format>R8G8B8</format>
         </image>
         <clip>
-          <near>0.02</near>
+          <!-- near = D435i min-Z. See the file header. -->
+          <near>0.2</near>
           <far>3.0</far>
         </clip>
       </camera>
       <plugin name="gripper_camera_controller" filename="libgazebo_ros_camera.so">
         <camera_name>gripper_camera</camera_name>
         <frame_name>$(arg robot_name)/gripper_camera_optical_link</frame_name>
-        <min_depth>0.02</min_depth>
+        <min_depth>0.2</min_depth>
         <max_depth>3.0</max_depth>
       </plugin>
     </sensor>

@@ -14,10 +14,32 @@ The main custom work in this repo is centered on damped least squares (DLS) inve
 
 The highest-level thing this stack does is a full **cup pick-and-place mission** — one
 launch, repeatable, driven by keyboard (`s` start / `x` stop / `r` restart), running
-the same way in sim and on the physical arm. It has its own reference, including what
-is still stubbed out and what remains to implement:
+the same way in sim and on the physical arm. The cup is located by real object detection
+during the scan sweep, not from a hardcoded vector.
 
 - **Mission:** [bcr_arm_rx150/PICK_PLACE_MISSION.md](bcr_arm_rx150/PICK_PLACE_MISSION.md)
+- **Remaining work:** [bcr_arm_rx150/REMAINING_WORK.md](bcr_arm_rx150/REMAINING_WORK.md)
+
+Run it in sim, two terminals:
+
+```bash
+# Terminal 1
+# run from src/bcr_arm/ in your checkout
+xhost +local:docker
+
+docker compose run --rm --name rx150 --service-ports rx150-sim bash -lc \
+  "bash /workspaces/bcr_arm/docker/setup_workspace.sh && set +u && \
+   source /workspaces/bcr_arm/install/setup.bash && \
+   ros2 launch bcr_arm_rx150 rx150_pick_place_sim.launch.py carry_level:=true"
+
+# Terminal 2 -- wait for "Idle. Waiting for mission start", then press s
+docker exec -it rx150 bash -lc \
+  "source /workspaces/bcr_arm/install/setup.bash && \
+   ros2 run bcr_arm_rx150 mission_keyboard"
+```
+
+Phase 1 is a ~2 minute sweep. See the mission doc for the launch flags worth tuning
+(`grasp_value`, `grasp_z_offset`, `autostart`, `use_vision_stub`).
 
 ![Gazebo BCR Arm simulation](images/gz_img1.png)
 
@@ -137,7 +159,7 @@ rosdep update
 These commands assume this repository itself is the colcon workspace root.
 
 ```bash
-cd ~/openRobotics/bcr_arm
+# run from src/bcr_arm/ in your checkout
 source /opt/ros/humble/setup.bash
 rosdep install --from-paths . --ignore-src -r -y
 colcon build --symlink-install
@@ -168,7 +190,7 @@ Important note:
 Build the image:
 
 ```bash
-cd ~/openRobotics/bcr_arm
+# run from src/bcr_arm/ in your checkout
 docker compose build
 ```
 
@@ -208,7 +230,7 @@ Typical setup:
 ```bash
 source /opt/ros/humble/setup.bash
 source ~/interbotix_ws/install/setup.bash
-cd ~/openRobotics/bcr_arm
+# run from src/bcr_arm/ in your checkout
 colcon build --symlink-install
 source install/setup.bash
 ```
@@ -226,7 +248,7 @@ source /usr/share/gazebo-11/setup.sh
 Launch the physical RX-150 driver from this repo:
 
 ```bash
-cd ~/openRobotics/bcr_arm
+# run from src/bcr_arm/ in your checkout
 source /opt/ros/humble/setup.bash
 source install/setup.bash
 ros2 launch bcr_arm_rx150 rx150_control.launch.py
@@ -235,7 +257,7 @@ ros2 launch bcr_arm_rx150 rx150_control.launch.py
 Send a named pose in another terminal:
 
 ```bash
-cd ~/openRobotics/bcr_arm
+# run from src/bcr_arm/ in your checkout
 source /opt/ros/humble/setup.bash
 source install/setup.bash
 ros2 run bcr_arm_rx150 rx150_named_pose --pose neutral_carry
@@ -289,7 +311,7 @@ ros2 run bcr_arm_rx150 rx150_dls_ik_executor --x 0.22 --y 0.00 --z 0.16 --frame 
 Launch the Interbotix RX-150 Gazebo Classic sim from this repo:
 
 ```bash
-cd ~/openRobotics/bcr_arm
+# run from src/bcr_arm/ in your checkout
 source /opt/ros/humble/setup.bash
 source install/setup.bash
 ros2 launch bcr_arm_rx150 rx150_gz_classic.launch.py
@@ -327,7 +349,7 @@ TODO: Simplify by creating a single launch file.
 ### Terminal 1: Launch Gazebo
 
 ```bash
-cd ~/openRobotics/bcr_arm
+# run from src/bcr_arm/ in your checkout
 source /opt/ros/humble/setup.bash
 source install/setup.bash
 ros2 launch bcr_arm_gazebo bcr_arm.gazebo.launch.py
@@ -338,7 +360,7 @@ ros2 launch bcr_arm_gazebo bcr_arm.gazebo.launch.py
 This sends the arm to the default `neutral_carry` pose, which is the recommended starting point for solver tests.
 
 ```bash
-cd ~/openRobotics/bcr_arm
+# run from src/bcr_arm/ in your checkout
 source /opt/ros/humble/setup.bash
 source install/setup.bash
 ros2 run bcr_arm_gazebo setup_arm_pose.py
@@ -357,7 +379,7 @@ ros2 run bcr_arm_gazebo setup_arm_pose.py --pose neutral_carry_yaw_right
 This node creates and moves a visible marker in Gazebo so the commanded target is easy to inspect.
 
 ```bash
-cd ~/openRobotics/bcr_arm
+# run from src/bcr_arm/ in your checkout
 source /opt/ros/humble/setup.bash
 source install/setup.bash
 ros2 run bcr_arm_gazebo cartesian_target_marker.py --ros-args -p marker_radius:=0.025
@@ -366,7 +388,7 @@ ros2 run bcr_arm_gazebo cartesian_target_marker.py --ros-args -p marker_radius:=
 ### Terminal 4: Start the Custom DLS IK Executor
 
 ```bash
-cd ~/openRobotics/bcr_arm
+# run from src/bcr_arm/ in your checkout
 source /opt/ros/humble/setup.bash
 source install/setup.bash
 ros2 run bcr_arm_gazebo dls_ik_executor.py
@@ -377,7 +399,7 @@ ros2 run bcr_arm_gazebo dls_ik_executor.py
 You can either publish a one-off Cartesian point:
 
 ```bash
-cd ~/openRobotics/bcr_arm
+# run from src/bcr_arm/ in your checkout
 source /opt/ros/humble/setup.bash
 source install/setup.bash
 ros2 topic pub --once /cartesian_target geometry_msgs/msg/PointStamped \
@@ -388,7 +410,7 @@ Or run the repeatable target sequence:
 
 ```bash
 source /opt/ros/humble/setup.bash
-source ~/openRobotics/bcr_arm/install/setup.bash
+source install/setup.bash
 ros2 run bcr_arm_gazebo cartesian_target_test_suite.py
 ```
 

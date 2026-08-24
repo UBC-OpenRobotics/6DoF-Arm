@@ -8,7 +8,18 @@ from launch_ros.substitutions import FindPackageShare
 
 
 def generate_launch_description():
+    # Every node in this stack runs on Gazebo's clock. The camera stamps its
+    # clouds in sim time and the interbotix bringup already publishes TF with
+    # use_sim_time, so a node left on the wall clock cannot line either of them
+    # up with anything -- which is what let clouds captured mid-slew be
+    # transformed with the pose the arm finished in. See scene_point_cloud.
+    use_sim_time = LaunchConfiguration('use_sim_time')
     return LaunchDescription([
+        DeclareLaunchArgument(
+            'use_sim_time', default_value='true',
+            description="Read time from Gazebo's /clock. Must stay true in sim: "
+                        'stamped TF lookups fail against a wall clock.',
+        ),
         DeclareLaunchArgument('robot_name', default_value='rx150'),
         DeclareLaunchArgument('use_rviz', default_value='true'),
         DeclareLaunchArgument('use_gazebo_gui', default_value='true'),
@@ -74,6 +85,7 @@ def generate_launch_description():
             executable='rx150_dls_ik_executor',
             output='screen',
             parameters=[{
+                'use_sim_time': use_sim_time,
                 'command_mode': 'trajectory',
                 'command_topic': '/rx150/arm_controller/joint_trajectory',
                 'joint_state_topic': '/rx150/joint_states',
@@ -92,6 +104,7 @@ def generate_launch_description():
             executable='rx150_gripper_controller',
             output='screen',
             parameters=[{
+                'use_sim_time': use_sim_time,
                 'command_mode': 'trajectory',
                 'command_topic': '/rx150/gripper_controller/joint_trajectory',
                 # 0.0 = closed, 1.0 = fully open
@@ -104,6 +117,7 @@ def generate_launch_description():
             output='screen',
             condition=IfCondition(LaunchConfiguration('use_scene_point_cloud')),
             parameters=[{
+                'use_sim_time': use_sim_time,
                 'input_topic': '/gripper_camera/points',
                 'output_topic': LaunchConfiguration('scene_point_cloud_output_topic'),
                 'target_frame': LaunchConfiguration('planning_frame'),
@@ -117,6 +131,7 @@ def generate_launch_description():
             output='screen',
             condition=IfCondition(LaunchConfiguration('use_path_planner')),
             parameters=[{
+                'use_sim_time': use_sim_time,
                 'world_frame': LaunchConfiguration('planning_frame'),
                 'point_cloud_topic': '/planning/point_cloud',
                 'joint_state_topic': '/rx150/joint_states',
@@ -135,6 +150,7 @@ def generate_launch_description():
             output='screen',
             condition=IfCondition(LaunchConfiguration('use_waypoint_executor')),
             parameters=[{
+                'use_sim_time': use_sim_time,
                 'world_frame': LaunchConfiguration('planning_frame'),
                 'joint_state_topic': '/rx150/joint_states',
                 'path_topic': '/planned_cartesian_path',
@@ -149,6 +165,7 @@ def generate_launch_description():
             output='screen',
             condition=IfCondition(LaunchConfiguration('use_joint_waypoint_executor')),
             parameters=[{
+                'use_sim_time': use_sim_time,
                 'joint_state_topic': '/rx150/joint_states',
                 'joint_path_topic': '/planned_joint_path',
                 'joint_command_topic': '/rx150/joint_command',

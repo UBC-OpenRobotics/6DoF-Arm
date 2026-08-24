@@ -18,6 +18,15 @@ from trajectory_msgs.msg import JointTrajectory, JointTrajectoryPoint
 # holds this against world up; everything else about the wrist stays free.
 _GRIPPER_UP_AXIS = np.array([0.0, 0.0, 1.0])
 
+# Restart postures for the IK solver.
+_RESEED_POSTURES = [
+    np.array([0.0,  0.28,  1.02, -1.30, 0.0]),
+    np.array([0.0,  0.00,  0.00,  0.00, 0.0]),
+    np.array([0.0, -0.65, -0.20, -1.00, 0.0]),
+    np.array([0.0,  0.60,  0.60, -1.20, 0.0]),
+    np.array([0.0, -0.40,  0.90, -0.50, 0.0]),
+]
+
 
 class Rx150DlsIkExecutor(Node):
     """Solve Cartesian targets for the physical RX-150 and publish joint trajectories."""
@@ -54,7 +63,11 @@ class Rx150DlsIkExecutor(Node):
         self.declare_parameter('tool_axis_x', 1.0)
         self.declare_parameter('tool_axis_y', 0.0)
         self.declare_parameter('tool_axis_z', 0.0)
-        self.declare_parameter('tool_offset_x', 0.108)
+        # Must match TOOL_OFFSET in bcr_arm_common/rx150_kinematics.py, which
+        # explains the value -- the gripper BAR sets it, not the pads. If the two
+        # drift apart, the planner and the solver disagree about where the arm's
+        # business end is.
+        self.declare_parameter('tool_offset_x', 0.1000)
         self.declare_parameter('tool_offset_y', 0.0)
         self.declare_parameter('tool_offset_z', 0.0)
         self.declare_parameter('solver_max_iterations', 120)
@@ -477,14 +490,44 @@ class Rx150DlsIkExecutor(Node):
     def _solve_target_configuration(
         self, q_seed: np.ndarray
     ) -> Optional[tuple[np.ndarray, float, float, bool]]:
-        """Solve the current target from ``q_seed`` via the shared DlsSolver.
+        """Solve the current target, restarting from other seeds if needed.
 
         Returns ``(q, position_error, orientation_error, converged)`` or None --
         the same contract the servo loop already consumes.
+
         """
-        return self._solver.solve(
-            q_seed, self._target_position, self._target_rotation
-        )
+        seeds = [np.asarray(q_seed, dtype=float)]
+        yaw = float(np.arctan2(self._target_position[1], self._target_position[0]))
+        for posture in _RESEED_POSTURES:
+            seed = posture.copy()
+            # Point the waist at the target; the restarts differ in arm posture,
+            # and making each of them also guess the waist wastes restarts.
+            seed[0] = yaw
+            seeds.append(seed)
+
+        best = None
+        for index, seed in enumerate(seeds):
+            result = self._solver.solve(
+                seed, self._target_position, self._target_rotation
+            )
+            if result is None:
+                continue
+            _, position_error, orientation_error, converged = result
+            acceptable = converged and not (
+                self._carry_level_active
+                and self._max_carry_tilt_rad > 0.0
+                and self._carry_tilt_rad(orientation_error) > self._max_carry_tilt_rad
+            )
+            if acceptable:
+                if index:
+                    self.get_logger().info(
+                        'Solved on reseed %d of %d (the current pose was a bad '
+                        'starting point for this target).' % (index, len(seeds) - 1)
+                    )
+                return result
+            if best is None or position_error < best[1]:
+                best = result
+        return best
 
     def _forward_kinematics(self, q: np.ndarray, with_jacobian: bool = False):
         if with_jacobian:

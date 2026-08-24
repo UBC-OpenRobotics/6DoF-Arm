@@ -13,7 +13,12 @@ from nav_msgs.msg import Path
 import numpy as np
 import rclpy
 from rclpy.node import Node
-from rclpy.qos import DurabilityPolicy, QoSProfile, qos_profile_sensor_data
+from rclpy.qos import (
+    DurabilityPolicy,
+    HistoryPolicy,
+    QoSProfile,
+    ReliabilityPolicy,
+)
 from sensor_msgs.msg import JointState, PointCloud2
 from sensor_msgs_py import point_cloud2
 from std_msgs.msg import String
@@ -51,6 +56,8 @@ class Rx150PointCloudPathPlanner(Node):
         self.declare_parameter('collision_extra_margin', 0.0)
         self.declare_parameter('reachable_position_tolerance', 0.015)
         self.declare_parameter('grasp_clearance_radius', 0.08)
+        # Optional anchor for that clearance sphere. See _filter_cloud_near_goal.
+        self.declare_parameter('grasp_anchor_topic', '/planning/grasp_anchor')
         self.declare_parameter('use_rrt_fallback', True)
         self.declare_parameter('joint_path_topic', '/planned_joint_path')
         self.declare_parameter('rrt_step', 0.10)
@@ -114,11 +121,25 @@ class Rx150PointCloudPathPlanner(Node):
         self._latest_cloud: Optional[np.ndarray] = None
 
         self.create_subscription(JointState, self._joint_state_topic, self._joint_state_cb, 10)
+
+        self._grasp_anchor: Optional[np.ndarray] = None
+        self.create_subscription(
+            PointStamped,
+            str(self.get_parameter('grasp_anchor_topic').value),
+            self._grasp_anchor_cb,
+            10,
+        )
+
         self.create_subscription(
             PointCloud2,
             self._point_cloud_topic,
             self._point_cloud_cb,
-            qos_profile_sensor_data,
+            QoSProfile(
+                depth=1,
+                history=HistoryPolicy.KEEP_LAST,
+                reliability=ReliabilityPolicy.RELIABLE,
+                durability=DurabilityPolicy.TRANSIENT_LOCAL,
+            ),
         )
         self.create_subscription(PointStamped, self._target_topic, self._target_cb, 10)
         self._path_pub = self.create_publisher(Path, self._path_topic, 10)
@@ -148,6 +169,24 @@ class Rx150PointCloudPathPlanner(Node):
         positions = dict(zip(msg.name, msg.position))
         if all(name in positions for name in self._joint_names):
             self._current_q = np.array([positions[name] for name in self._joint_names], dtype=float)
+
+    def _grasp_anchor_cb(self, msg: PointStamped) -> None:
+        """Set/clear the point the grasp-clearance sphere is centred on.
+
+        A NaN coordinate clears it. See _filter_cloud_near_goal for why this
+        exists at all.
+        """
+        point = np.array([msg.point.x, msg.point.y, msg.point.z], dtype=float)
+        if not np.all(np.isfinite(point)):
+            if self._grasp_anchor is not None:
+                self.get_logger().info('Grasp anchor cleared.')
+            self._grasp_anchor = None
+            return
+        self._grasp_anchor = point
+        self.get_logger().info(
+            'Grasp anchor set to [%.3f, %.3f, %.3f]; clearance now follows the '
+            'object rather than each intermediate goal.' % tuple(point)
+        )
 
     def _point_cloud_cb(self, msg: PointCloud2) -> None:
         points = point_cloud2.read_points_numpy(
@@ -313,23 +352,38 @@ class Rx150PointCloudPathPlanner(Node):
         self._joint_path_pub.publish(msg)
 
     def _filter_cloud_near_goal(self, cloud: np.ndarray, goal_xyz: np.ndarray) -> np.ndarray:
-        """Drop cloud points within grasp_clearance_radius of the goal.
+        """Drop cloud points within grasp_clearance_radius of the target object.
 
         Those points are the object being reached for (the cup), not an obstacle;
         keeping them would make the gripper collide with its own target. Points
         outside the sphere are untouched and remain obstacles.
+
+        The sphere is centred on ``_grasp_anchor`` when one has been published,
+        and otherwise falls back to the goal.
+
+        That distinction is the whole point. An approach is not one move: the
+        caller hovers ``approach_height`` above the object and then descends onto
+        it. Anchoring on the goal means the sphere jumps with each intermediate
+        goal, so during the hover move -- whose goal is 0.15 m up in clear air --
+        the object sits *outside* the sphere and becomes a hard obstacle. The
+        planner then refuses to fly over the very thing it is being sent to pick
+        up. Anchoring on the object keeps the exclusion attached to the object
+        for the whole approach, which is what "this is my target, not an
+        obstacle" actually means.
         """
         if self._grasp_clearance_radius <= 0.0 or cloud is None or cloud.shape[0] == 0:
             return cloud
-        deltas = cloud[:, :3].astype(float) - goal_xyz
+        centre = self._grasp_anchor if self._grasp_anchor is not None else goal_xyz
+        deltas = cloud[:, :3].astype(float) - centre
         distances_sq = np.einsum('ij,ij->i', deltas, deltas)
         keep = distances_sq > (self._grasp_clearance_radius ** 2)
         removed = int(cloud.shape[0] - int(np.count_nonzero(keep)))
         if removed > 0:
             self.get_logger().info(
                 'Grasp clearance: treating %d cloud point(s) within %.3f m of the '
-                'goal as the target object (excluded from collision checks).'
-                % (removed, self._grasp_clearance_radius)
+                '%s as the target object (excluded from collision checks).'
+                % (removed, self._grasp_clearance_radius,
+                   'grasp anchor' if self._grasp_anchor is not None else 'goal')
             )
         return cloud[keep]
 
@@ -486,7 +540,8 @@ class Rx150PointCloudPathPlanner(Node):
         goal_xyz: np.ndarray,
     ) -> List[np.ndarray]:
         if len(cell_path) == 1:
-            return [start_xyz.copy(), goal_xyz.copy()]
+
+            return self._resample_xyz_path([start_xyz.copy(), goal_xyz.copy()])
 
         travel_z = max(
             start_xyz[2],

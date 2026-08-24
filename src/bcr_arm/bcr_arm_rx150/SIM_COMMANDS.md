@@ -8,7 +8,7 @@ Command reference for building, launching, and driving the RX-150 Gazebo sim sta
 One-time, or after changing the Dockerfile or package dependencies.
 
 ```bash
-cd ~/openRobotics/src/bcr_arm
+# run from src/bcr_arm/ in your checkout
 xhost +local:docker                       # let containers open your X display
 docker compose --profile sim build        # or: docker compose build rx150-sim
 ```
@@ -16,7 +16,7 @@ docker compose --profile sim build        # or: docker compose build rx150-sim
 ## 2. Launch the Sim Stack (Terminal 1 — keep running)
 
 ```bash
-cd ~/openRobotics/src/bcr_arm
+# run from src/bcr_arm/ in your checkout
 docker compose run --rm --service-ports rx150-sim
 ```
 
@@ -32,6 +32,8 @@ This runs `rosdep install` + `colcon build --packages-up-to bcr_arm_rx150`, then
 - `rx150_dls_ik_executor` — the custom DLS IK solver (also exposes a direct
   joint-command channel on `/rx150/joint_command` used by the RRT fallback)
 - `scene_point_cloud` — bridges the gripper camera cloud into `/planning/live_point_cloud`
+  (the plain sim stack has no object detection; that comes with the pick-and-place
+  mission launch, §7)
 - `rx150_point_cloud_path_planner` — obstacle-avoiding grid planner, with a
   joint-space **RRT-Connect whole-body fallback** (publishes a joint path on
   `/planned_joint_path` when the 2D grid search can't route the whole arm around
@@ -39,6 +41,35 @@ This runs `rosdep install` + `colcon build --packages-up-to bcr_arm_rx150`, then
 - `rx150_path_waypoint_executor` — drives a planned Cartesian path through the IK executor
 - `rx150_joint_waypoint_executor` — steps a planned **joint** path (from the RRT
   fallback) through the IK executor's direct joint-command channel
+
+### Sim time
+
+Every launch here defaults to `use_sim_time:=true`. **Nothing to set.**
+
+It matters because Gazebo stamps camera images and TF with its own clock. A node left on
+the wall clock cannot match those stamps to anything, so its data is dropped — silently,
+with the node and camera both looking healthy.
+
+The one way to get it wrong is launching `perception.launch.py` **by hand** against a
+running sim: its default is `false`, because its default target is hardware. Pass it
+explicitly:
+
+```bash
+ros2 launch arm_perception perception.launch.py use_sim_time:=true enable_camera:=false \
+  color_topic:=/gripper_camera/image_raw \
+  depth_topic:=/gripper_camera/depth/image_raw \
+  camera_info_topic:=/gripper_camera/camera_info
+```
+
+`localization_3d_node` checks this a few seconds after startup:
+
+```
+Clock check OK: use_sim_time=True, /clock present.        <- healthy
+[ERROR] A simulator is publishing /clock but this node is on the WALL clock.
+        ... EVERY DETECTION WILL BE DROPPED -- silently.  <- relaunch with use_sim_time:=true
+```
+
+On hardware it is `false` everywhere and the check stays quiet — there is no `/clock`.
 
 All commands below run in a **new terminal**, exec'd into that same running container:
 
@@ -55,9 +86,22 @@ docker compose exec rx150-sim bash -lc "source /workspaces/bcr_arm/install/setup
 ros2 run data_collector scene_sweep_mapper"
 ```
 
-Tucks the arm into a fixed scan posture, sweeps 8 waist angles for full 360° coverage, and
+Tucks the arm into a fixed scan posture, sweeps 8 waist angles taking 2 looks at each
+(the second with the wrist tilted 0.15 rad further down, which is what puts objects
+lying on the floor inside 0.335 m into frame), and
 publishes the merged map to `/planning/point_cloud` (latched, republished every 2s so late
 subscribers still get it).
+
+This standalone form is for the plain sim stack (§2). By default
+(`wait_for_trigger:=false`) it sweeps once on startup, as above; with
+`wait_for_trigger:=true` it idles and sweeps on each `/sweep/start` instead.
+
+> **Do not run this while the pick-and-place mission is up.** That launch already runs
+> this node in triggered mode. A second copy would mean two publishers on
+> `/planning/point_cloud`, both republishing every 2 s and overwriting each other —
+> RViz flickers between the two maps, and the planner's obstacle map alternates with
+> them, making whether a path is found depend on which cloud arrived last. The mission
+> sweeps for real on its own; see [PICK_PLACE_MISSION.md](PICK_PLACE_MISSION.md) §6.
 
 ## 4. Send a Cartesian Target (through the planner)
 
@@ -207,22 +251,58 @@ ros2 topic info /planning/point_cloud
 
 ## 7. Pick-and-Place Mission
 
-The full cup pick-and-place mission (repeatable, keyboard-driven) has its own
-reference: **[PICK_PLACE_MISSION.md](PICK_PLACE_MISSION.md)**. Short version:
+Full reference: **[PICK_PLACE_MISSION.md](PICK_PLACE_MISSION.md)**. Short version:
 
 ```bash
 # Terminal 1 -- the whole mission stack
-docker compose run --rm --service-ports rx150-sim bash -lc \
+# run from src/bcr_arm/ in your checkout
+xhost +local:docker
+
+docker compose run --rm --name rx150 --service-ports rx150-sim bash -lc \
   "bash /workspaces/bcr_arm/docker/setup_workspace.sh && set +u && \
    source /workspaces/bcr_arm/install/setup.bash && \
    ros2 launch bcr_arm_rx150 rx150_pick_place_sim.launch.py carry_level:=true"
 
-# Terminal 2 -- keyboard control (s = start, x = stop, r = restart, q = quit)
-docker compose exec -it rx150-sim bash -lc \
+# Terminal 2 -- keyboard (s = start, x = stop, r = restart, q = quit)
+docker exec -it rx150 bash -lc \
   "source /workspaces/bcr_arm/install/setup.bash && \
    ros2 run bcr_arm_rx150 mission_keyboard"
 ```
 
-It idles until you press `s`, runs one full cycle, then returns to idle ready to run
-again -- no relaunch. See PICK_PLACE_MISSION.md for the phase breakdown, tuning args,
-and what is still stubbed out.
+Press `s` once and wait — phase 1 is a ~2 minute sweep. The most useful launch flags are
+`grasp_value`, `grasp_z_offset`, `autostart`, `use_vision_stub` and `phase_delay_sec`;
+see PICK_PLACE_MISSION.md §1 for the table.
+
+**The sweep is what finds the cup**, not a hardcoded vector and not a fixed observation
+pose. The detector runs throughout the sweep, every sighting is kept, and the sweep turns
+the camera through a full circle — so the cup can be moved anywhere in the workspace
+between runs and still be found. Measured: cup at `(0.300, 0.000, 0.090)` reported as
+`(0.304, 0.001, 0.090)`, answered in ~1 ms from cache.
+
+The scene has a small cup on a book-stack riser at `[0.30, 0.0]`, top at z = 0.060. The
+riser matters: a low object on the floor is much harder for the scan to see, and the
+elevation is part of why sweep-based detection works.
+
+> **Two sim-only accommodations.** `yolo_confidence` is `0.15` and `cup_classes` is
+> `[cup, frisbee, bowl, toilet]`.
+>
+> COCO-trained YOLOv8n *localises* the sim cup perfectly but *labels* a flat-shaded
+> Gazebo primitive by silhouette, so it often scores `frisbee` rather than `cup`. Wrong
+> label, right pixels — the 3D point is still correct.
+>
+> **`cup_classes` is a priority order, not a set.** First class with a fresh detection
+> wins; confidence only breaks ties *within* a class. Ranking by confidence across the
+> whole list is dangerous here — the blue obstacle cylinder scores `vase` 0.49 and would
+> win. **Only add classes the cup itself produces**: `umbrella` (0.43) belongs to the
+> obstacle boxes, `vase` to the cylinder.
+>
+> Narrow back to `[cup]` / `0.5` once a task-trained model replaces `yolov8n.pt`, and on
+> hardware, where a real cup photographs like a cup.
+
+**The goal is still a placeholder.** Nothing in the world is a detectable drop-off
+target, so a `"goal"` request always answers `goal_fallback_xyz` and logs a warning.
+
+Phase 1 is a real sweep — 8 waist angles, 2 looks each, ~123 s — and the mission blocks
+on `sweep:complete` before planning. Do not also run the standalone sweep from §3.
+
+If detection misbehaves and you just want the mission to run, use `use_vision_stub:=true`.

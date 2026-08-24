@@ -16,7 +16,13 @@ import numpy as np
 import open3d as o3d
 import rclpy
 from rclpy.node import Node
-from rclpy.qos import qos_profile_sensor_data
+from rclpy.qos import (
+    DurabilityPolicy,
+    HistoryPolicy,
+    QoSProfile,
+    ReliabilityPolicy,
+    qos_profile_sensor_data,
+)
 from rclpy.time import Time
 
 from sensor_msgs.msg import PointCloud2
@@ -313,7 +319,14 @@ class MappingNode(Node):
 
         #qos_profile_sensor_data is for high-frequency sensor data like point clouds, images, and IMU readings. It prioritizes low latency and best-effort delivery
 
-        self._map_pub = self.create_publisher(PointCloud2, self.OUTPUT_TOPIC, 10)
+
+        latched = QoSProfile(
+            depth=1,
+            history=HistoryPolicy.KEEP_LAST,
+            reliability=ReliabilityPolicy.RELIABLE,
+            durability=DurabilityPolicy.TRANSIENT_LOCAL,
+        )
+        self._map_pub = self.create_publisher(PointCloud2, self.OUTPUT_TOPIC, latched)
 
         # # A service lets Planning explicitly
         # # signal "the scan sweep is finished, build the map now" once all

@@ -39,11 +39,12 @@ import time
 
 import numpy as np
 import rclpy
+from rclpy.exceptions import ParameterUninitializedException
 from bcr_arm_common import rx150_kinematics
 from geometry_msgs.msg import PointStamped
 from rclpy.node import Node
 from sensor_msgs.msg import JointState, PointCloud2
-from std_msgs.msg import Bool, Empty, String
+from std_msgs.msg import Bool, Empty, Float64, String
 from trajectory_msgs.msg import JointTrajectory, JointTrajectoryPoint
 
 # ── VISION CONTRACT (orchestrator ⇄ vision node) ─────────────────────────────
@@ -68,6 +69,9 @@ from trajectory_msgs.msg import JointTrajectory, JointTrajectoryPoint
 
 # Terminal /motion/status events the orchestrator waits on. Success advances the
 # mission; failure aborts it. Any other (non-terminal) token is ignored.
+_SWEEP_SUCCESS = {'sweep:complete'}
+_SWEEP_FAILURE = {'sweep:failed', 'sweep:aborted'}
+
 _MOTION_SUCCESS = {'path:complete', 'joint:complete'}
 _MOTION_FAILURE = {
     'path:aborted',
@@ -93,6 +97,8 @@ class Rx150PickPlaceOrchestrator(Node):
         self.declare_parameter('sweep_stop_topic', '/sweep/stop')
         self.declare_parameter('vision_request_topic', '/vision/find_request')
         self.declare_parameter('carry_level_topic', '/motion/carry_level')
+        self.declare_parameter('grasp_anchor_topic', '/planning/grasp_anchor')
+        self.declare_parameter('gripper_state_topic', '/rx150/gripper_state')
         # Gripper actions wait for the arm to actually stop first: grabbing or
         # releasing mid-deceleration knocks the cup. Settled = every joint below
         # settle_speed_rad_s for settle_dwell_sec.
@@ -112,7 +118,7 @@ class Rx150PickPlaceOrchestrator(Node):
 
         # Behaviour.
         self.declare_parameter('autostart', False)
-        self.declare_parameter('home_joints', [0.0, 0.0, 0.0, 0.0, 0.0])
+        self.declare_parameter('home_joints', [0.0, -0.65, -0.20, -1.00, 0.0])
         self.declare_parameter('home_on_abort', True)
 
         # Backstop timeout: how long to wait for a /motion/status event before
@@ -131,10 +137,9 @@ class Rx150PickPlaceOrchestrator(Node):
         # position, so Gazebo settles it at 0.015 = shut). Without this the
         # phase-4 'close' is a no-op onto an already-shut gripper.
         self.declare_parameter('pregrasp_value', 'open')
-        # PLACEHOLDER: how far to close on the cup. Partial, not fully shut --
-        # squeezing to 0.0 on a real cup either crushes it or stalls the servo.
-        # Tune to the actual cup before trusting it (there is no cup in the sim
-        # world to calibrate against, so this number is a guess by construction).
+        # PLACEHOLDER -- how far to close on the cup. Partial, not fully shut,
+        # since squeezing to 0.0 on a real cup either crushes it or stalls the
+        # servo. Must be measured against the actual cup before it is trusted.
         self.declare_parameter('grasp_value', '0.3')
         self.declare_parameter('release_value', 'open')
         self.declare_parameter('grasp_settle_sec', 1.5)
@@ -144,14 +149,61 @@ class Rx150PickPlaceOrchestrator(Node):
         self.declare_parameter('clearance_dz', 0.03)         # m, back off after release
         self.declare_parameter('place_height', float('nan'))  # override goal z if set
         # Approach shape: hover this far directly above a grasp/place point and
-        # descend onto it, instead of driving straight in. 0.0 restores the old
-        # straight-in behaviour. See _descend_onto for why overhead and not a
+        # descend onto it instead of driving straight in. 0.0 restores the
+        # straight-in behaviour. See _descend_onto for why overhead rather than a
         # standoff toward the base.
-        self.declare_parameter('approach_height', 0.10)
+        #
+        # The floor on this value is geometric. The object is excluded from
+        # collision checks only within grasp_clearance_radius of the GOAL, and the
+        # hover point is a different, higher goal -- so on the way there the
+        # object is a hard obstacle against the gripper capsule (0.07 radius plus
+        # a 0.015 margin). For an object of height h grasped at its centre,
+        # clearing it needs
+        #
+        #     approach_height > 0.085 + h/2
+        #
+        # Set it too low and the abort looks like an unreachable target when it is
+        # really the hover point sitting inside the object.
+        self.declare_parameter('approach_height', 0.15)
+        # How far BEHIND the target (radially, toward the base) the hover sits,
+        # so the final approach comes in diagonally instead of straight down.
+        # The gripper bar is a bracket standing 35 mm proud of the gripper axis
+        # and 103 mm wide, just behind the fingers: descending vertically lowers
+        # it onto the object's rim before the fingers are around it and shunts
+        # the object aside. 0.0 restores the vertical descent.
+        self.declare_parameter('approach_back_off', 0.045)
+        # Max length of one leg of that diagonal. Must stay within the planner's
+        # 0.02 m grid cell -- a leg spanning three or more cells has its middle
+        # waypoints lifted to a common travel height, which turns "in and down"
+        # back into "across, then straight down".
+        self.declare_parameter('approach_step', 0.02)
 
         # Timeouts.
-        self.declare_parameter('sweep_timeout_sec', 90.0)
+        # The scan takes two looks per waist station (see SCAN_WRIST_OFFSETS in
+        # scene_sweep_mapper) and runs ~2 min in sim, slower on real servos. This
+        # is a deadline for a HUNG sweep, not a schedule -- the happy path ends on
+        # sweep:complete long before it.
+        self.declare_parameter('sweep_timeout_sec', 240.0)
         self.declare_parameter('vision_timeout_sec', 10.0)
+
+        # OPTIONAL look-down pose struck before the vision request.
+        self.declare_parameter('observe_joints', [float('nan')])
+        # Let the detector accumulate frames once the arm has stopped. The
+        # camera runs ~4.4 Hz, so this is a handful of frames, not one.
+        # Only used when observe_joints is set.
+        self.declare_parameter('observe_settle_sec', 1.5)
+
+        # Grasp verification. A position command is not a grasp: the fingers
+        # reach the commanded value when they close on empty air, and stall
+        # short of it when the cup is between them. So if actual openness ends
+        # up more than this above what we asked for, something is in the
+        # gripper. Both numbers are normalized 0 (closed) .. 1 (open), converted
+        # by rx150_gripper_controller from whichever units it is driving.
+        #
+        # This only works when grasp_value is commanded TIGHTER than the object,
+        # which is the correct tuning anyway. Set check_grasp false to disable.
+        self.declare_parameter('check_grasp', True)
+        self.declare_parameter('grasp_detect_margin', 0.05)
 
         # Debugging aid: pause between phases so each one is easy to watch and
         # read in the log. Set to 0.0 for normal (continuous) running.
@@ -171,8 +223,19 @@ class Rx150PickPlaceOrchestrator(Node):
         self._clearance_dz = float(gp('clearance_dz').value)
         self._place_height = float(gp('place_height').value)
         self._approach_height = max(0.0, float(gp('approach_height').value))
+        self._approach_back_off = max(0.0, float(gp('approach_back_off').value))
+        self._approach_step = max(0.005, float(gp('approach_step').value))
         self._sweep_timeout_sec = float(gp('sweep_timeout_sec').value)
         self._vision_timeout_sec = float(gp('vision_timeout_sec').value)
+        try:
+            observe_raw = gp('observe_joints').value
+        except ParameterUninitializedException:
+            observe_raw = None
+        self._observe_joints = self._clean_joints(observe_raw)
+        self._observe_settle_sec = max(0.0, float(gp('observe_settle_sec').value))
+        self._check_grasp = bool(gp('check_grasp').value)
+        self._gripper_state_topic = str(gp('gripper_state_topic').value)
+        self._grasp_detect_margin = float(gp('grasp_detect_margin').value)
         self._carry_level = bool(gp('carry_level').value)
         self._settle_speed_rad_s = float(gp('settle_speed_rad_s').value)
         self._settle_dwell_sec = float(gp('settle_dwell_sec').value)
@@ -183,6 +246,7 @@ class Rx150PickPlaceOrchestrator(Node):
         self._current_q = None
         self._last_joint_time = None
         self._joint_speed = None
+        self._gripper_state = None
         self._cloud_points = 0
         self._vision_result = None
         self._start_received = False
@@ -220,6 +284,15 @@ class Rx150PickPlaceOrchestrator(Node):
         self._cancel_pub = self.create_publisher(
             Empty, str(gp('cancel_topic').value), 10
         )
+        # Tells the planner which point is "the object I am picking up", so its
+        # grasp-clearance sphere stays on the object across the hover+descend
+        # pair instead of jumping to each intermediate goal. Without this the
+        # hover move (goal 0.15 m above the object, in clear air) leaves the
+        # object outside the sphere, and the planner refuses to fly over the
+        # very thing it was told to pick up.
+        self._grasp_anchor_pub = self.create_publisher(
+            PointStamped, str(gp('grasp_anchor_topic').value), 10
+        )
 
         # Subscriptions (the only feedback we have).
         self.create_subscription(
@@ -234,6 +307,10 @@ class Rx150PickPlaceOrchestrator(Node):
         self.create_subscription(
             PointStamped, str(gp('vision_response_topic').value),
             self._vision_cb, 10
+        )
+        self.create_subscription(
+            Float64, str(gp('gripper_state_topic').value),
+            self._gripper_state_cb, 10
         )
         self._start_topic = str(gp('start_topic').value)
         self._stop_topic = str(gp('stop_topic').value)
@@ -274,11 +351,15 @@ class Rx150PickPlaceOrchestrator(Node):
 
     def _status_cb(self, msg: String) -> None:
         token = msg.data.strip()
-        if token in _MOTION_SUCCESS or token in _MOTION_FAILURE:
+        if (token in _MOTION_SUCCESS or token in _MOTION_FAILURE
+                or token in _SWEEP_SUCCESS or token in _SWEEP_FAILURE):
             self._last_status = token
 
     def _vision_cb(self, msg: PointStamped) -> None:
         self._vision_result = msg
+
+    def _gripper_state_cb(self, msg: Float64) -> None:
+        self._gripper_state = float(msg.data)
 
     def _start_cb(self, _msg: Empty) -> None:
         self._start_received = True
@@ -295,6 +376,7 @@ class Rx150PickPlaceOrchestrator(Node):
         self.get_logger().warning('STOP requested.')
         self._stop_requested = True
         self._cancel_pub.publish(Empty())
+        self._sweep_stop_pub.publish(Empty())
 
     def _restart_cb(self, _msg: Empty) -> None:
         """Stop the running mission, then start a fresh one straight away.
@@ -309,6 +391,7 @@ class Rx150PickPlaceOrchestrator(Node):
         if not self._stop_requested:
             self._stop_requested = True
             self._cancel_pub.publish(Empty())
+            self._sweep_stop_pub.publish(Empty())
 
     # -- low-level helpers --------------------------------------------------
     def _spin_for(self, seconds: float, interruptible: bool = True) -> None:
@@ -398,7 +481,52 @@ class Rx150PickPlaceOrchestrator(Node):
         self._send_gripper(token)
         self._spin_for(self._grasp_settle_sec)
 
-    def _descend_onto(self, target, label: str, hover_gripper=None) -> bool:
+    def _grasp_succeeded(self, commanded: str) -> bool:
+        """Did the gripper actually close on something?
+
+        The fingers reach the commanded position when they close on empty air,
+        and stall short of it when an object is between them. So actual openness
+        sitting meaningfully ABOVE the commanded value means something is held.
+
+        Returns True when it cannot tell (feedback missing, or a named token
+        whose numeric value we do not know) -- an unverifiable grasp must not
+        abort a mission that is otherwise fine.
+        """
+        if not self._check_grasp:
+            return True
+        try:
+            target = float(commanded)
+        except (TypeError, ValueError):
+            # 'open'/'close' carry no numeric target to compare against.
+            self.get_logger().info(
+                "Grasp check skipped: '%s' is a named state, not a value." % commanded
+            )
+            return True
+        if self._gripper_state is None:
+            self.get_logger().warning(
+                'Grasp check skipped: no feedback on %s. Is '
+                'rx150_gripper_controller running and seeing joint states?'
+                % self._gripper_state_topic
+            )
+            return True
+
+        actual = self._gripper_state
+        slack = actual - target
+        if slack > self._grasp_detect_margin:
+            self.get_logger().info(
+                'Grasp confirmed: commanded %.2f, fingers stopped at %.2f '
+                '(+%.2f) -- something is between them.' % (target, actual, slack)
+            )
+            return True
+        self.get_logger().error(
+            'GRASP FAILED: commanded %.2f and the fingers reached %.2f (+%.2f, '
+            'under the %.2f margin), i.e. they closed on empty air. The arm is '
+            'holding nothing.' % (target, actual, slack, self._grasp_detect_margin)
+        )
+        return False
+
+    def _descend_onto(self, target, label: str, hover_gripper=None,
+                      level_on_descent: bool = False) -> bool:
         """Reach `target` from directly above it instead of driving straight in.
 
         The descent needs no special planner support: hover and target share an
@@ -429,6 +557,16 @@ class Rx150PickPlaceOrchestrator(Node):
             # Settle anyway so the descent starts from the hover point rather
             # than from wherever the arm is mid-deceleration.
             self._wait_until_stationary('%s descent' % label)
+
+        if level_on_descent:
+
+            self._set_carry_level(True)
+
+      
+            if not self._move_to(hover, '%s-level' % label):
+                self.get_logger().error(
+                    '%s: could not level the gripper at the hover point.' % label)
+                return False
 
         self.get_logger().info('%s: descending straight down onto the target.' % label)
         return self._move_to(target, label)
@@ -488,10 +626,41 @@ class Rx150PickPlaceOrchestrator(Node):
             % ('ON (cup in gripper)' if enabled else 'OFF (gripper empty)')
         )
 
-    def _send_home(self) -> None:
-        # Route home as a one-waypoint joint path through the joint executor, so
-        # it drives the move and reports joint:complete -- same event channel as
-        # every other motion (no separate arrival check needed).
+    @staticmethod
+    def _clean_joints(value):
+        """Return a 5-joint pose, or [] meaning "no pose".
+
+        Three spellings of "off" all land here, because the layers disagree on
+        what they can represent:
+          * [] -- what the launch file passes (the launch parser cannot read
+            'nan', so the node's own sentinel is not expressible there);
+          * [nan] -- the node's declared default, because rclpy infers
+            BYTE_ARRAY from a bare [] and then REJECTS a real pose override;
+          * anything that is not exactly 5 joints.
+        The length check is the one that matters operationally: this pose is
+        sent through the joint executor, which does no collision checking, so a
+        truncated list must never reach the arm.
+        """
+        try:
+            joints = [float(v) for v in (value or [])]
+        except (TypeError, ValueError):
+            return []
+        if len(joints) != 5:
+            return []
+        if any(v != v for v in joints):  # v != v -> NaN
+            return []
+        return joints
+
+    def _send_joint_pose(self, joints, label: str) -> None:
+        """Drive a named joint configuration as a one-waypoint joint path.
+
+        Routed through the joint executor so it reports joint:complete on the
+        same event channel as every other motion -- no separate arrival check.
+
+        NOTE: the joint executor does no collision checking. Any pose sent this
+        way must be collision-free by construction (see home_joints /
+        observe_joints), because nothing downstream will catch it.
+        """
         if self._stopping():
             return
         self._last_status = None
@@ -499,12 +668,108 @@ class Rx150PickPlaceOrchestrator(Node):
         traj.header.stamp = self.get_clock().now().to_msg()
         traj.joint_names = list(rx150_kinematics.JOINT_NAMES)
         point = JointTrajectoryPoint()
-        point.positions = [float(v) for v in self._home_joints]
+        point.positions = [float(v) for v in joints]
         traj.points = [point]
         self._joint_path_pub.publish(traj)
-        self.get_logger().info('Sent home joint path %s' % self._home_joints)
+        self.get_logger().info('Sent %s joint path %s' % (label, list(joints)))
+
+    def _send_home(self) -> None:
+        self._send_joint_pose(self._home_joints, 'home')
+
+    def _set_grasp_anchor(self, xyz) -> None:
+        """Pin the planner's grasp-clearance sphere to an object (None clears)."""
+        msg = PointStamped()
+        msg.header.stamp = self.get_clock().now().to_msg()
+        msg.header.frame_id = self._frame
+        if xyz is None:
+            # NaN is the agreed "no anchor" signal; the planner falls back to
+            # centring the sphere on the goal.
+            msg.point.x = msg.point.y = msg.point.z = float('nan')
+            self.get_logger().info('Clearing grasp anchor.')
+        else:
+            msg.point.x, msg.point.y, msg.point.z = (float(v) for v in xyz)
+            self.get_logger().info(
+                'Grasp anchor -> [%.3f, %.3f, %.3f]' % tuple(float(v) for v in xyz)
+            )
+        self._grasp_anchor_pub.publish(msg)
+
+    def _look_at_scene(self) -> bool:
+        """Optionally strike a look-down pose before asking vision.
+
+        DOES NOTHING BY DEFAULT, because the SWEEP is what finds the cup. Every
+        sighting the detector makes during the sweep is kept, and the sweep
+        turns the camera through a full circle -- so the cup can be put
+        anywhere in the workspace and some station will have looked at it.
+
+        This deliberately no longer clears the vision cache. It used to, so that
+        only a look from the fixed observation pose could answer "where is the
+        cup". That threw away every sweep sighting, which capped the findable
+        region at the ~55 deg the camera sees from one heading -- move the cup
+        outside that wedge and the mission aborted even though the sweep had
+        stared straight at it.
+
+        The clearing was added because a blue obstacle cylinder in SIM scored
+        "cup" 0.68 during a sweep and outranked the real cup. That is a sim
+        artifact: the detector is trained on photographs of real cups, and a
+        flat-shaded Gazebo primitive is not a failure mode it exhibits on real
+        imagery. Discarding all sweep evidence to defend against it cost more
+        than it bought.
+
+        /vision/clear_cache still exists on the bridge as a manual reset -- it
+        is simply not part of the mission any more.
+        """
+        if not self._observe_joints:
+            return True
+        self._send_joint_pose(self._observe_joints, 'observation')
+        if not self._wait_for_motion('observe'):
+            self.get_logger().warning(
+                'Could not reach the observation pose; asking vision anyway '
+                '(sweep sightings are still cached).'
+            )
+            return False
+        # Hold still so the detector gets several frames of a stationary scene,
+        # and so localization's TF lookup is taken while nothing is moving.
+        self._wait_until_stationary('observation')
+        if self._observe_settle_sec > 0.0:
+            self._spin_for(self._observe_settle_sec)
+        return True
 
     # -- phase waits --------------------------------------------------------
+    def _wait_for_subscriber(self, publisher, label: str,
+                            timeout_sec: float = 10.0) -> bool:
+        """Block until someone is listening on ``publisher``, or time out.
+
+        ROS 2 publishes into the void when no subscriber has been matched yet,
+        and pub/sub discovery is not instant. The mission's very first act is a
+        one-shot Empty on /sweep/start, so if the orchestrator wins the startup
+        race that trigger is silently dropped and phase 1 waits out
+        sweep_timeout_sec before aborting with "sweep did not complete" -- which
+        reads like a broken sweep node rather than a lost message.
+
+        The sweep node logging "Waiting for /sweep/start" is not proof it will
+        receive one -- discovery is what matters, not log order.
+
+        Returns False on timeout, having warned; the caller publishes anyway,
+        since a missing subscriber is worth reporting but not worth refusing to
+        try.
+        """
+        if publisher.get_subscription_count() > 0:
+            return True
+        self.get_logger().info(
+            'Waiting for a subscriber on %s before sending %s...'
+            % (publisher.topic_name, label)
+        )
+        ok = self._wait_until(
+            lambda: publisher.get_subscription_count() > 0, timeout_sec
+        )
+        if not ok:
+            self.get_logger().warning(
+                'Nothing is subscribed to %s after %.0f s; sending %s anyway. '
+                'Is the node that handles it running?'
+                % (publisher.topic_name, timeout_sec, label)
+            )
+        return ok
+
     def _wait_for_motion(self, label: str) -> bool:
         """Wait for a terminal /motion/status event for the move just sent.
 
@@ -531,10 +796,31 @@ class Rx150PickPlaceOrchestrator(Node):
         )
         return success
 
-    def _wait_for_cloud(self) -> bool:
-        return self._wait_until(
-            lambda: self._cloud_points > 0, self._sweep_timeout_sec
+    def _wait_for_sweep(self) -> bool:
+        """Block until the sweep actually finishes, not merely until a cloud lands.
+
+        Cloud arrival is the wrong signal: a sweep node republishes its previous
+        map every 2 s, so on the second and later cycles that test would pass
+        within 2 s of the request -- while the arm is still physically sweeping --
+        and the mission would drive on using the *previous* cycle's map, with two
+        things commanding the arm at once. sweep:complete is emitted only after
+        this cycle's merged map is on the wire.
+        """
+        ok = self._wait_until(
+            lambda: self._last_status is not None, self._sweep_timeout_sec
         )
+        if self._stop_requested:
+            self.get_logger().warning('Sweep abandoned: stop requested.')
+            return False
+        if not ok:
+            self.get_logger().error(
+                'No sweep event within %.0f s. Is a sweep node running and '
+                'subscribed to %s?'
+                % (self._sweep_timeout_sec, self._sweep_pub.topic_name)
+            )
+            return False
+        self.get_logger().info('Sweep -> %s' % self._last_status)
+        return self._last_status in _SWEEP_SUCCESS
 
     def _request_vision(self, kind: str):
         """Ask vision for 'cup'/'goal'; return xyz np.array or None."""
@@ -585,10 +871,15 @@ class Rx150PickPlaceOrchestrator(Node):
         # Clear before doing anything else: _stopping() guards every command
         # primitive, so the recovery move below would be silently dropped.
         self._stop_requested = False
-        log = self.get_logger().warning if stopped else self.get_logger().error
-        log('=' * 64)
-        log('MISSION %s' % ('STOPPED by request.' if stopped else 'ABORTED: %s' % reason))
-        log('=' * 64)
+
+        if stopped:
+            self.get_logger().warning('=' * 64)
+            self.get_logger().warning('MISSION STOPPED by request.')
+            self.get_logger().warning('=' * 64)
+        else:
+            self.get_logger().error('=' * 64)
+            self.get_logger().error('MISSION ABORTED: %s' % reason)
+            self.get_logger().error('=' * 64)
         # Clear the constraint even if we aborted mid-carry, so it cannot leak
         # into the recovery move or a later re-run of the mission.
         self._set_carry_level(False)
@@ -643,6 +934,9 @@ class Rx150PickPlaceOrchestrator(Node):
         self._vision_result = None
         self._cloud_points = 0
         self._joint_speed = None
+        # A stale anchor from an aborted cycle would keep a hole punched in the
+        # obstacle map for the next one.
+        self._set_grasp_anchor(None)
 
     def _run_once(self) -> int:
         self.get_logger().info('=' * 64)
@@ -653,34 +947,42 @@ class Rx150PickPlaceOrchestrator(Node):
         self.get_logger().info('=' * 64)
 
         # Phase 1: sweep -> obstacle map on /planning/point_cloud.
-        self._phase('[1/10] Sweep: requesting obstacle map.')
+        self._phase('[1/10] Sweep: scanning for obstacles.')
+
+        self._last_status = None
+
+        self._wait_for_subscriber(self._sweep_pub, 'the sweep trigger')
         self._sweep_pub.publish(Empty())
+        self.get_logger().info(
+            'Sweep requested; waiting for it to finish before planning...'
+        )
+        if not self._wait_for_sweep():
+            return self._abort('sweep did not complete')
 
-        #--sweep motion--
-
-        self._sweep_stop_pub.publish(Empty())
-        
-        if not self._wait_for_cloud():
-            return self._abort('no obstacle map on point-cloud topic after sweep')
+        if not self._wait_until(lambda: self._cloud_points > 0, timeout_sec=5.0):
+            self.get_logger().warning(
+                'Sweep reported complete but no cloud reached this node yet; '
+                'continuing (the planner has its own subscription).'
+            )
         self.get_logger().info('Obstacle map present (%d points).' % self._cloud_points)
-
-        
 
         # Phase 2: find the cup.
         self._phase('[2/10] Vision: locate cup.')
+
+        self._look_at_scene()
         cup = self._request_vision('cup')
         if cup is None:
             return self._abort('vision returned no cup')
 
         # Phase 3: move to the cup.
-        # Level goes on BEFORE the approach, not after the grasp: arriving at the
-        # cup already level means the gripper closes in its final orientation and
-        # nothing has to rotate afterwards. Enabling it only at phase 4 would grasp
-        # the cup at whatever pitch the approach happened to end on, then twist it
-        # upright while holding it.
+        # Level goes on at the HOVER (see _descend_onto): the transit keeps full
+        # reach with an empty gripper, and the descent is still level, so the
+        # gripper closes in its final orientation with nothing to rotate after.
         self._phase('[3/10] Move to cup (hover, open gripper, then descend).')
-        self._set_carry_level(True)
-        if not self._descend_onto(cup, 'cup', hover_gripper=self._pregrasp_value):
+        # Anchor before the hover, not after: the hover is the move that needs it.
+        self._set_grasp_anchor(cup)
+        if not self._descend_onto(cup, 'cup', hover_gripper=self._pregrasp_value,
+                                  level_on_descent=True):
             return self._abort('could not reach cup (planner refused or timed out)')
 
         # Phase 4: grasp. Level is already on from the approach, so the gripper
@@ -688,7 +990,16 @@ class Rx150PickPlaceOrchestrator(Node):
         self._phase('[4/10] Grasp (close gripper to %s).' % self._grasp_value)
         self._actuate_gripper(self._grasp_value, 'grasp')
 
+        if not self._grasp_succeeded(self._grasp_value):
+            return self._abort('grasp failed -- gripper closed on nothing')
+
         # Phase 5: lift the cup.
+        #
+        # The anchor stays UP through the lift. The cup itself moves with the
+        # gripper, but whatever it was standing on does not, and the arm is still
+        # down among it -- drop the anchor here and those points come back while
+        # the gripper is inside them, putting the arm's own current pose in
+        # collision so the lift fails before it starts.
         self._phase('[5/10] Lift cup.')
         ee = self._current_ee()
         if ee is None:
@@ -697,9 +1008,16 @@ class Rx150PickPlaceOrchestrator(Node):
         self._send_cartesian(lift_target)
         if not self._wait_for_motion('lift'):
             return self._abort('could not lift cup')
+        # Clear of the surface now, so the stale sphere can go before it blinds
+        # the planner to a real region of the scene for the rest of the mission.
+        self._set_grasp_anchor(None)
 
         # Phase 6: find the goal.
         self._phase('[6/10] Vision: locate goal.')
+        # Not done while carrying the cup: the observation pose is a big joint
+        # move and would swing a held cup around. The goal is a fixed fallback
+        # point today, so there is nothing to look at; re-enable the look if a
+        # real goal class is ever trained.
         goal = self._request_vision('goal')
         if goal is None:
             return self._abort('vision returned no goal')
@@ -709,9 +1027,12 @@ class Rx150PickPlaceOrchestrator(Node):
         goal_target = goal.copy()
         if not np.isnan(self._place_height):
             goal_target[2] = self._place_height
+        # Same reasoning as the pick: the place point is where the cup is going,
+        # so whatever is already there should not block the hover above it.
+        self._set_grasp_anchor(goal_target)
         # Same shape as the pick: the cup is set down by lowering onto the spot,
         # not by sliding into it across the table.
-        if not self._descend_onto(goal_target, 'goal'):
+        if not self._descend_onto(goal_target, 'goal', level_on_descent=True):
             return self._abort('could not reach goal')
 
         # Phase 8: release. Cup is out of the gripper, so drop the level
@@ -719,6 +1040,7 @@ class Rx150PickPlaceOrchestrator(Node):
         self._phase('[8/10] Release (gripper open).')
         self._actuate_gripper(self._release_value, 'release')
         self._set_carry_level(False)
+        self._set_grasp_anchor(None)
 
         # Phase 9: lift clear of the placed cup (best-effort).
         self._phase('[9/10] Lift clear of cup.')

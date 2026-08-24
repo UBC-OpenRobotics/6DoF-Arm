@@ -1,0 +1,90 @@
+<?xml version="1.0"?>
+<!--
+  RealSense mounting link for the PHYSICAL RX-150.
+
+  This is the hardware counterpart to rx150_gripper_depth_camera.urdf.xacro.
+  That file is SIM ONLY: it carries a Gazebo <sensor> plugin that fabricates a
+  depth camera. On the real arm the RealSense driver produces the data, and all
+  the robot description has to do is say WHERE the camera is bolted on.
+
+  Why this file has to exist at all: without a camera link in the URDF,
+  robot_state_publisher publishes no camera frame, so the RealSense's own TF
+  tree (camera_link -> camera_depth_optical_frame -> ...) is a free-floating
+  island with no path to rx150/base_link. Every TF lookup from the camera frame
+  then fails, which silently kills BOTH consumers: the sweep relay
+  (scene_point_cloud, so no obstacle map) and localization_3d_node (so vision
+  publishes nothing and the mission aborts at the vision phase).
+
+  ##########################################################################
+  THE NUMBERS BELOW ARE PLACEHOLDERS. MEASURE THEM ON THE REAL ARM.
+  ##########################################################################
+  They are copied from the sim camera's invented offset and are almost
+  certainly wrong for your bracket. See TASK_camera_extrinsics_urdf.md. Until
+  they are measured, the point cloud will land in the wrong place relative to
+  the arm: consistently and confidently, which is the hard kind of wrong.
+
+  How to check: put a known object in front of the arm, look at
+  /planning/live_point_cloud in RViz with the robot model shown, and confirm
+  the cloud lands where the object physically is. If it is offset or tilted,
+  it is these numbers, not the pipeline.
+
+  xyz is metres from the parent link's origin; rpy is roll/pitch/yaw in radians.
+
+  ==========================================================================
+  KEEP COMMENTS INSIDE <robot> SHORT AND FREE OF A COLON FOLLOWED BY A SPACE.
+  ==========================================================================
+  xacro strips comments that sit outside <robot> (like this one) but PRESERVES
+  the ones inside it. The generated URDF is handed to robot_state_publisher as
+  a string parameter, and launch_ros YAML-parses it on the way through. One
+  "colon space" inside a surviving comment turns the whole description into a
+  YAML mapping, and the entire hardware launch dies with
+
+      Unable to parse the value of parameter robot_description as yaml
+
+  which names neither this file nor the comment. bcr_arm_rx150/test/
+  test_camera_tf_chain.py asserts the rendered URDF still loads as a plain
+  string, so a regression here fails a test instead of a bring-up.
+
+  The seam with the RealSense driver's TF tree:
+  perception.launch.py publishes a static transform from camera_mount_link to
+  the driver's root frame (camera_link by default), so the driver's internal
+  optical frames inherit a path back to rx150/base_link. That static transform
+  is deliberately IDENTITY; the real mounting pose belongs in the joint below,
+  so the extrinsics have exactly one home. A D435's own frames sit a few cm
+  inside its casing, so if you measure to the casing, fold that offset in here.
+-->
+<robot xmlns:xacro="http://www.ros.org/wiki/xacro">
+
+  <!-- Mounting pose, relative to the gripper link. PLACEHOLDER, measure it. -->
+  <xacro:property name="cam_mount_xyz" value="0.0 0.0 0.065"/>
+  <xacro:property name="cam_mount_rpy" value="0 0 0"/>
+
+  <joint name="$(arg robot_name)_camera_mount" type="fixed">
+    <parent link="$(arg robot_name)/gripper_link"/>
+    <child  link="$(arg robot_name)/camera_mount_link"/>
+    <origin xyz="${cam_mount_xyz}" rpy="${cam_mount_rpy}"/>
+  </joint>
+
+  <link name="$(arg robot_name)/camera_mount_link">
+    <visual>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <geometry>
+        <box size="0.025 0.090 0.025"/>
+      </geometry>
+      <material name="interbotix_black"/>
+    </visual>
+    <collision>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <geometry>
+        <box size="0.025 0.090 0.025"/>
+      </geometry>
+    </collision>
+    <inertial>
+      <mass value="0.072"/>
+      <inertia
+        ixx="0.00001" iyy="0.00001" izz="0.00001"
+        ixy="0.0" ixz="0.0" iyz="0.0"/>
+    </inertial>
+  </link>
+
+</robot>

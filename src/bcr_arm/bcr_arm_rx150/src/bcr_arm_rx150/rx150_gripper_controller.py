@@ -55,6 +55,7 @@ import math
 import rclpy
 from interbotix_xs_msgs.msg import JointSingleCommand
 from rclpy.node import Node
+from sensor_msgs.msg import JointState
 from std_msgs.msg import Float64, String
 from trajectory_msgs.msg import JointTrajectory, JointTrajectoryPoint
 
@@ -89,6 +90,8 @@ class Rx150GripperController(Node):
         self.declare_parameter('closed_position', _SENTINEL)
         self.declare_parameter('position_min', _SENTINEL)
         self.declare_parameter('position_max', _SENTINEL)
+        self.declare_parameter('joint_state_topic', '/rx150/joint_states')
+        self.declare_parameter('state_output_topic', '/rx150/gripper_state')
 
         mode = str(self.get_parameter('command_mode').value).strip().lower()
         if mode not in {'single', 'trajectory'}:
@@ -143,6 +146,14 @@ class Rx150GripperController(Node):
                 JointTrajectory, self._command_topic, 10
             )
 
+        self._state_pub = self.create_publisher(
+            Float64, str(self.get_parameter('state_output_topic').value), 10
+        )
+        self.create_subscription(
+            JointState, str(self.get_parameter('joint_state_topic').value),
+            self._joint_state_callback, 10,
+        )
+
         self._oneshot = oneshot_command is not None
         if not self._oneshot:
             self.create_subscription(
@@ -171,6 +182,35 @@ class Rx150GripperController(Node):
                     self._position_max,
                 )
             )
+
+    def _feedback_joint(self) -> str:
+        """The joint whose position reports actual gripper openness."""
+        if self._command_mode == 'single':
+            return self._single_joint_name
+        # Trajectory mode drives two mirrored fingers; either reports the travel,
+        # and left_finger is the one the URDF gives a positive range.
+        return self._joint_names[0] if self._joint_names else 'left_finger'
+
+    def _joint_state_callback(self, msg: JointState) -> None:
+        """Publish actual openness, normalized 0 (closed) .. 1 (open).
+
+        This is what makes grasp detection possible. A position *command* is not
+        a grasp: the fingers reach the commanded value when they close on empty
+        air, and stall short of it when an object is between them. Comparing
+        commanded against actual therefore distinguishes the two, but only if
+        both are in the same units, which is what this conversion provides.
+        """
+        name = self._feedback_joint()
+        if name not in msg.name:
+            return
+        raw = float(msg.position[msg.name.index(name)])
+        span = self._open_position - self._closed_position
+        if abs(span) < 1e-9:
+            return
+        # Deliberately NOT clamped to [0, 1]: a value outside that range means
+        # the gripper is past an endpoint, which is exactly the signal that the
+        # endpoints are wrong. Clamping would hide it.
+        self._state_pub.publish(Float64(data=(raw - self._closed_position) / span))
 
     def _param_or(self, name: str, default: float) -> float:
         value = float(self.get_parameter(name).value)

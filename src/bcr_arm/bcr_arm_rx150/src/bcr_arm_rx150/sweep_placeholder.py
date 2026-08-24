@@ -22,7 +22,7 @@ import rclpy
 from rclpy.node import Node
 from rclpy.qos import DurabilityPolicy, HistoryPolicy, QoSProfile
 from sensor_msgs.msg import PointCloud2, PointField
-from std_msgs.msg import Empty, Header
+from std_msgs.msg import Empty, Header, String
 
 
 def _box_points(center, size, n_per_axis=8):
@@ -47,6 +47,7 @@ class SweepPlaceholder(Node):
         self.declare_parameter('box_center', [0.34, 0.14, 0.12])
         self.declare_parameter('box_size', [0.06, 0.06, 0.24])
         self.declare_parameter('republish_sec', 2.0)
+        self.declare_parameter('status_topic', '/motion/status')
 
         self._frame = str(self.get_parameter('planning_frame').value)
         center = [float(v) for v in self.get_parameter('box_center').value]
@@ -65,6 +66,11 @@ class SweepPlaceholder(Node):
             Empty, str(self.get_parameter('trigger_topic').value),
             self._on_trigger, 10
         )
+        # Same lifecycle event the real sweep emits, so the orchestrator waits
+        # on one contract regardless of which sweep is running.
+        self._status_pub = self.create_publisher(
+            String, str(self.get_parameter('status_topic').value), 10
+        )
         self._publish()  # latch one immediately
         self.create_timer(
             float(self.get_parameter('republish_sec').value), self._publish
@@ -77,6 +83,7 @@ class SweepPlaceholder(Node):
     def _on_trigger(self, _msg: Empty) -> None:
         self.get_logger().info('Sweep requested; publishing canned map.')
         self._publish()
+        self._status_pub.publish(String(data='sweep:complete'))
 
     def _publish(self) -> None:
         header = Header()

@@ -43,9 +43,46 @@ JOINT_AXES: List[np.ndarray] = [
     np.array([0.0, 1.0, 0.0], dtype=float),
     np.array([1.0, 0.0, 0.0], dtype=float),
 ]
-# Default tool offset (end of wrist_rotate link to the tool tip). Matches the
-# ``tool_offset_*`` parameter defaults in rx150_dls_ik_executor.py.
-TOOL_OFFSET = np.array([0.108, 0.0, 0.0], dtype=float)
+# Default tool offset: wrist_rotate origin to the point the arm actually aims.
+# Matches the ``tool_offset_*`` parameter defaults in rx150_dls_ik_executor.py.
+#
+# Aiming at a point puts the grasped object's AXIS there, so this value trades
+# pad contact against clearance for the parts of the hand behind the pads.
+# Geometry from the URDF collision meshes, in the gripper_link frame (the same
+# description the real arm loads, so none of this is sim-specific):
+#
+#     palm / finger pivots (fingers_link)   0.0660
+#     pad surfaces span                     0.0539 .. 0.1092  (centre 0.0816)
+#     gripper bar (bracket, 103 mm wide)    0.0430 .. 0.0710
+#     ee_gripper_link (vendor tool point)   0.0936
+#
+# The GRIPPER BAR is the binding constraint, not the pads -- it stands 35 mm
+# proud of the gripper axis just behind the fingers, so
+#
+#     bar clearance = TOOL_OFFSET - 0.071 - object_radius
+#
+# Aim too short (the pad centre, or even ee_gripper_link) and the bar comes down
+# inside the object and shunts it aside during the descent; aim too long and only
+# the fingertips touch, which closes off centre and shoves the object. 0.1000
+# leaves 8 mm of bar clearance on a 21 mm-radius object -- enough to survive the
+# vision error -- with 30 mm of pad still on it.
+#
+# The same formula caps the object size: much past a 29 mm radius and the bracket
+# reaches the object before the fingers close. Worth knowing before picking a
+# target object for the real arm.
+TOOL_OFFSET = np.array([0.1000, 0.0, 0.0], dtype=float)
+
+# How far the gripper physically REACHES, for collision checking only: the
+# wrist_rotate origin to the fingertips. This is deliberately longer than
+# TOOL_OFFSET, because the two answer different questions:
+#
+#     TOOL_OFFSET           where the arm AIMS      (pad centre, 0.0936)
+#     COLLISION_TIP_OFFSET  how far the arm REACHES (fingertips, 0.121)
+#
+# Conflating them under-covers the gripper: the last segment's capsule would stop
+# at the aim point, leaving the fingertips outside the collision model, and the
+# planner would sweep them through objects on a path it had certified clear.
+COLLISION_TIP_OFFSET = np.array([0.121, 0.0, 0.0], dtype=float)
 
 # Per-link capsule radii for the whole-body collision model. Index i is the
 # segment from joint i to joint i+1 (segment 4 runs from wrist_rotate to the tool
@@ -151,12 +188,15 @@ def forward_kinematics_with_jacobian(
 
 
 def link_positions(
-    q: np.ndarray, tool_offset: np.ndarray = TOOL_OFFSET
+    q: np.ndarray, tool_offset: np.ndarray = COLLISION_TIP_OFFSET
 ) -> np.ndarray:
-    """World positions of every joint plus the tool tip, shape (6, 3).
+    """World positions of every joint plus the gripper tip, shape (6, 3).
 
-    The 5 rows of joint origins followed by the tool tip define the 5 capsule
+    The 5 rows of joint origins followed by the tip define the 5 capsule
     segments used by :func:`check_arm_collision` (segment i spans rows i, i+1).
+
+    Defaults to COLLISION_TIP_OFFSET, not TOOL_OFFSET: this describes the space
+    the arm OCCUPIES, which runs to the fingertips, not the point it aims at.
     """
     ee_xyz, _, joint_positions, _ = _fk_core(q, tool_offset)
     return np.vstack(joint_positions + [ee_xyz])

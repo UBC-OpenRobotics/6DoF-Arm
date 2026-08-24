@@ -7,6 +7,8 @@ from typing import List, Optional
 from bcr_arm_common import rx150_kinematics
 from geometry_msgs.msg import PointStamped, PoseStamped
 from nav_msgs.msg import Path
+import math
+
 import numpy as np
 import rclpy
 from rclpy.node import Node
@@ -33,6 +35,8 @@ class Rx150PathWaypointExecutor(Node):
         # because the IK refuses over-tilted solves outright (max_carry_tilt_deg)
         # -- position slack never buys a spilled cup.
         self.declare_parameter('carry_waypoint_reached_tolerance', 0.022)
+
+        self.declare_parameter('carry_waypoint_tilt_tolerance_deg', 10.0)
         self.declare_parameter('publish_period_sec', 0.5)
         self.declare_parameter('waypoint_height_offset', 0.0)
         self.declare_parameter('verbose_waypoint_logging', True)
@@ -71,6 +75,8 @@ class Rx150PathWaypointExecutor(Node):
         self._carry_waypoint_reached_tolerance = float(
             self.get_parameter('carry_waypoint_reached_tolerance').value
         )
+        self._carry_tilt_tolerance_rad = math.radians(max(0.0, float(
+            self.get_parameter('carry_waypoint_tilt_tolerance_deg').value)))
         self._publish_period_sec = max(
             0.05, float(self.get_parameter('publish_period_sec').value)
         )
@@ -165,6 +171,22 @@ class Rx150PathWaypointExecutor(Node):
         if self._carry_level_active:
             return self._carry_waypoint_reached_tolerance
         return self._base_waypoint_reached_tolerance
+
+    def _carry_orientation_reached(self) -> bool:
+        """Is the gripper level enough to call a carry waypoint reached?
+
+        Always True unless level-carry is on. Position alone is not enough in
+        pose_level mode -- it would tick a waypoint off at any orientation, and
+        since this test is the ONLY gate, re-sending a point the arm is already
+        standing on would complete without ever commanding a solve. That makes
+        "level the gripper before descending" a silent no-op.
+        """
+        if not self._carry_level_active or self._current_q is None:
+            return True
+        _, rotation = self._forward_kinematics_pose(self._current_q)
+        # Level means the gripper's own +z points along world +z.
+        cos_tilt = float(np.clip(rotation[:, 2] @ np.array([0.0, 0.0, 1.0]), -1.0, 1.0))
+        return math.acos(cos_tilt) <= self._carry_tilt_tolerance_rad
 
     @property
     def _waypoint_target_mode(self) -> str:
@@ -290,7 +312,8 @@ class Rx150PathWaypointExecutor(Node):
             self._emit('path:aborted')
             return
 
-        if distance_to_target <= self._waypoint_reached_tolerance:
+        if (distance_to_target <= self._waypoint_reached_tolerance
+                and self._carry_orientation_reached()):
             self._current_waypoint_index += 1
             if self._current_waypoint_index >= len(self._active_waypoints):
                 self._reset_path_state()

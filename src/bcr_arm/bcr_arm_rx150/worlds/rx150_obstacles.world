@@ -98,5 +98,207 @@
         </visual>
       </link>
     </model>
+    <!-- Pick target: a small Solo cup standing on the floor.
+
+         Sized to the RX-150 gripper, not to a real 16 oz cup. The sim gripper
+         spans a 0.030 m to 0.074 m finger gap, so the graspable band is roughly
+         0.040 to 0.065 m across; this cup is 0.056 m at the rim tapering to
+         0.040 m at the base, 0.075 m tall.
+
+         Standing at x=0.30. That radius is not arbitrary:
+           - Inside 0.28 m the tucked scan posture sweeps its own links through
+             the cup and knocks it over.
+           - It must clear the arm's parked pose, which is why the mission parks
+             retracted rather than at the arm's [0,0,0,0,0] zero.
+           - 0.30 m is comfortably inside reach for both the grasp (z=0.05) and
+             the overhead hover (z=0.20).
+
+         The sweep locates this cup. Each waist station takes a second look with
+         the wrist dipped (SCAN_WRIST_OFFSETS in scene_sweep_mapper), which is
+         what brings a floor-height object into frame inside the workspace.
+
+         Not static: the mission has to pick it up. -->
+
+    <!-- A small stack of books the shot glass stands on. Static, so it is a
+         fixed part of the scene rather than something the arm can nudge. Top
+         face at z=0.060, which lifts the grasp clear of the floor.
+
+         THE FOOTPRINT IS CONSTRAINED ; do not widen it. The descent is a
+         LEVEL approach, so the gripper arrives horizontal at the grasp height
+         and its capsule (segment 4, radius 0.070, length 0.108) reaches
+         0.070 m BELOW the grasp point and 0.108 m back toward the base. Any
+         mapped point inside that capsule blocks the descent unless the grasp
+         anchor clearance has already removed it, and that clearance is a
+         0.080 m sphere about the grasp point. So a book surface at height z
+         must stay within sqrt(0.080^2 - (0.090 - z)^2) of the axis:
+
+             z=0.030 -> 0.053      z=0.050 -> 0.069
+             z=0.040 -> 0.062      z=0.060 -> 0.074
+
+         Widen it and the edge falls outside the clearance sphere but inside the
+         gripper capsule, and the planner refuses every descent with
+         "Body collision on link segment 4".
+
+         The bottom book sits entirely below the sweep's z_min of 0.03, so it
+         never enters the obstacle map and its width is unconstrained. -->
+    <model name="book_stack">
+      <static>true</static>
+      <pose>0.30 0.0 0.0 0 0 0</pose>
+      <link name="link">
+        <collision name="book_bottom_collision">
+          <pose>0 0 0.010 0 0 0</pose>
+          <geometry><box><size>0.100 0.078 0.020</size></box></geometry>
+          <surface>
+            <friction><ode><mu>1.0</mu><mu2>1.0</mu2></ode></friction>
+          </surface>
+        </collision>
+        <visual name="book_bottom_visual">
+          <pose>0 0 0.010 0 0 0</pose>
+          <geometry><box><size>0.100 0.078 0.020</size></box></geometry>
+          <material>
+            <ambient>0.18 0.10 0.06 1</ambient>
+            <diffuse>0.42 0.24 0.14 1</diffuse>
+            <specular>0.10 0.10 0.10 1</specular>
+          </material>
+        </visual>
+        <collision name="book_middle_collision">
+          <pose>0 0 0.030 0 0 0</pose>
+          <geometry><box><size>0.075 0.058 0.020</size></box></geometry>
+          <surface>
+            <friction><ode><mu>1.0</mu><mu2>1.0</mu2></ode></friction>
+          </surface>
+        </collision>
+        <visual name="book_middle_visual">
+          <pose>0 0 0.030 0 0 0</pose>
+          <geometry><box><size>0.075 0.058 0.020</size></box></geometry>
+          <material>
+            <ambient>0.08 0.10 0.20 1</ambient>
+            <diffuse>0.18 0.24 0.48 1</diffuse>
+            <specular>0.10 0.10 0.10 1</specular>
+          </material>
+        </visual>
+        <collision name="book_top_collision">
+          <pose>0 0 0.050 0 0 0</pose>
+          <geometry><box><size>0.070 0.054 0.020</size></box></geometry>
+          <surface>
+            <friction><ode><mu>1.0</mu><mu2>1.0</mu2></ode></friction>
+          </surface>
+        </collision>
+        <visual name="book_top_visual">
+          <pose>0 0 0.050 0 0 0</pose>
+          <geometry><box><size>0.070 0.054 0.020</size></box></geometry>
+          <material>
+            <ambient>0.20 0.16 0.06 1</ambient>
+            <diffuse>0.55 0.44 0.18 1</diffuse>
+            <specular>0.10 0.10 0.10 1</specular>
+          </material>
+        </visual>
+      </link>
+    </model>
+
+    <model name="cup">
+      <!-- Red plastic shot glass, 0.042 across and 0.055 tall, standing on the
+           book stack.
+
+           ROUND, deliberately. Flat faces would grip better, but detection is
+           a stock COCO YOLO model that recognises a cup by its round tapered
+           silhouette and scores a square block at nothing. Shape is a
+           perception requirement here, not a free physics variable.
+
+           The contact numbers below are what keep the grasp from ejecting the
+           object. The gripper is POSITION controlled, so it drives to its
+           commanded opening regardless of what is in the way and the remaining
+           gap resolves as penetration; force is kp times that penetration, so a
+           stiff kp on a 12 g object is hundreds of g of acceleration. kp 15000
+           against a ~0.7 mm squeeze is about 10 N, with friction capacity well
+           over the object's weight. max_vel matters just as much. It caps how
+           fast a penetrating contact is pushed apart, which is the direct
+           control on being spat out. The fingers carry matching values, since
+           ODE builds a contact from both surfaces and takes the lower friction
+           of the pair.
+
+           0.042 across is a floor set by DETECTION, not physics. Smaller than
+           this is too few pixels to recognise reliably at a 0.30 m standoff.
+           Still well under the 0.052 x 0.075 Solo cup it replaces.
+
+           Spawned 2.5 mm clear of the books so it settles instead of resolving
+           a zero depth contact on the first step. Books are 0.060 tall, so the
+           base lands at 0.0625 and mid body at 0.0900. -->
+      <pose>0.30 0.0 0.0900 0 0 0</pose>
+      <link name="link">
+        <inertial>
+          <mass>0.012</mass>
+          <!-- Cylinder, m=0.012 r=0.021 h=0.055 -->
+          <inertia>
+            <ixx>0.00000435</ixx><iyy>0.00000435</iyy><izz>0.00000265</izz>
+            <ixy>0.0</ixy><ixz>0.0</ixz><iyz>0.0</iyz>
+          </inertia>
+        </inertial>
+        <collision name="collision">
+          <geometry>
+            <cylinder><radius>0.021</radius><length>0.055</length></cylinder>
+          </geometry>
+          <surface>
+            <friction>
+              <ode><mu>1.5</mu><mu2>1.5</mu2></ode>
+            </friction>
+            <bounce><restitution_coefficient>0.0</restitution_coefficient></bounce>
+            <contact>
+              <ode>
+                <kp>6000.0</kp>
+                <kd>150.0</kd>
+                <min_depth>0.0</min_depth>
+                <max_vel>0.005</max_vel>
+              </ode>
+            </contact>
+          </surface>
+        </collision>
+        <visual name="body_0">
+          <pose>0 0 -0.0206 0 0 0</pose>
+          <geometry><cylinder><radius>0.0175</radius><length>0.0138</length></cylinder></geometry>
+          <material>
+            <ambient>0.62 0.09 0.11 1</ambient>
+            <diffuse>0.88 0.13 0.16 1</diffuse>
+            <specular>0.25 0.25 0.25 1</specular>
+            <emissive>0.32 0.05 0.06 1</emissive>
+          </material>
+        </visual>
+        <visual name="body_1">
+          <pose>0 0 -0.0069 0 0 0</pose>
+          <geometry><cylinder><radius>0.0190</radius><length>0.0138</length></cylinder></geometry>
+          <material>
+            <ambient>0.62 0.09 0.11 1</ambient>
+            <diffuse>0.88 0.13 0.16 1</diffuse>
+            <specular>0.25 0.25 0.25 1</specular>
+            <emissive>0.32 0.05 0.06 1</emissive>
+          </material>
+        </visual>
+        <visual name="body_2">
+          <pose>0 0 0.0069 0 0 0</pose>
+          <geometry><cylinder><radius>0.0205</radius><length>0.0138</length></cylinder></geometry>
+          <material>
+            <ambient>0.62 0.09 0.11 1</ambient>
+            <diffuse>0.88 0.13 0.16 1</diffuse>
+            <specular>0.25 0.25 0.25 1</specular>
+            <emissive>0.32 0.05 0.06 1</emissive>
+          </material>
+        </visual>
+        <visual name="body_3">
+          <pose>0 0 0.0206 0 0 0</pose>
+          <geometry><cylinder><radius>0.0220</radius><length>0.0138</length></cylinder></geometry>
+          <material>
+            <ambient>0.62 0.09 0.11 1</ambient>
+            <diffuse>0.88 0.13 0.16 1</diffuse>
+            <specular>0.25 0.25 0.25 1</specular>
+            <emissive>0.32 0.05 0.06 1</emissive>
+          </material>
+        </visual>
+        <velocity_decay>
+          <linear>0.05</linear>
+          <angular>0.05</angular>
+        </velocity_decay>
+      </link>
+    </model>
+
   </world>
 </sdf>
