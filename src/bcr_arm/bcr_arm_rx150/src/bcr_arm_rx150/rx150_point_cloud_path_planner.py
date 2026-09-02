@@ -247,9 +247,17 @@ class Rx150PointCloudPathPlanner(Node):
 
             cell_path = self._astar(start_idx, goal_idx, occupancy)
             if cell_path is None:
+                # Report how full the grid was. "No route" on a nearly empty
+                # grid means one wall in the way; on a nearly full grid it means
+                # the map itself is the problem, and no replanning will help.
+                total_cells = self._grid_width() * self._grid_height()
                 self.get_logger().info(
                     'A* found no 2D route to the target after %d replan '
-                    'attempt(s); handing off to the whole-body fallback.' % attempt
+                    'attempt(s); %d/%d grid cell(s) blocked (%.0f%%, inflation '
+                    '%d cell(s)). Handing off to the whole-body fallback.'
+                    % (attempt, len(occupancy), total_cells,
+                       100.0 * len(occupancy) / max(1, total_cells),
+                       self._obstacle_inflation_cells)
                 )
                 break
 
@@ -313,14 +321,19 @@ class Rx150PointCloudPathPlanner(Node):
         if not result.succeeded:
             self.get_logger().warning(
                 'RRT-Connect fallback found no path (goals=%d, result=%s, '
-                'iterations=%s, nodes=%s, elapsed=%.3fs). Target is likely '
-                'unreachable for the whole arm.'
+                'iterations=%s, nodes=%s, elapsed=%.3fs, start_in_collision=%s, '
+                'obstacle_points=%d). %s'
                 % (
                     result.goal_count,
                     stats.get('result'),
                     stats.get('iterations'),
                     stats.get('nodes'),
                     float(stats.get('elapsed_sec', 0.0)),
+                    bool(stats.get('start_in_collision', False)),
+                    0 if obstacle_points is None else len(obstacle_points),
+                    'The arm is already touching the map at its current pose.'
+                    if stats.get('start_in_collision')
+                    else 'Target is likely unreachable for the whole arm.',
                 )
             )
             return False

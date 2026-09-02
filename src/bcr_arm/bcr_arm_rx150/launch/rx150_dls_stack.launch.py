@@ -164,7 +164,16 @@ def generate_launch_description():
                 'grid_x_max': 0.45,
                 'grid_y_min': -0.45,
                 'grid_y_max': 0.45,
-                'obstacle_inflation_cells': 3,
+                # 1 cell (2 cm) of inflation, not 3. The grid is 45x45 = 2025
+                # cells; at 3 cells every obstacle point blocks a 14x14 cm
+                # square, so a few hundred scattered points sever the grid and
+                # A* reports "no route" on a scene that is mostly clear.
+                'obstacle_inflation_cells': 1,
+                # The fallback is collision-check bound: ~3 ms per check against
+                # an 18k-point map, ~3 checks per tree extension. The old 1.5 s
+                # budget bought roughly 30 nodes, which is not enough for a
+                # 5-DOF search to route around anything.
+                'rrt_time_budget_sec': 8.0,
             }],
         ),
 

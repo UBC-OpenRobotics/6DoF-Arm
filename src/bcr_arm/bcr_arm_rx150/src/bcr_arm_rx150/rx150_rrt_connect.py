@@ -172,10 +172,15 @@ class RrtConnectPlanner:
         tree_a, tree_b = start_tree, goal_tree
         a_is_start = True
 
+        # Iterations actually run, not the cap. On a time-budget exit these
+        # differ by orders of magnitude, and reporting the cap hides the fact
+        # that the search was cut short rather than exhausted.
+        completed_iterations = 0
         for iteration in range(self.max_iters):
             if time.monotonic() - start_time > self.time_budget_sec:
                 self.last_stats['result'] = 'time_budget'
                 break
+            completed_iterations = iteration + 1
 
             q_rand = self._sample()
             status, new_index = self._extend(tree_a, q_rand)
@@ -202,7 +207,7 @@ class RrtConnectPlanner:
         if self.last_stats['result'] == 'none':
             self.last_stats['result'] = 'max_iters'
         self.last_stats.update(
-            iterations=self.max_iters,
+            iterations=completed_iterations,
             nodes=len(start_tree.nodes) + len(goal_tree.nodes),
             elapsed_sec=time.monotonic() - start_time,
         )
