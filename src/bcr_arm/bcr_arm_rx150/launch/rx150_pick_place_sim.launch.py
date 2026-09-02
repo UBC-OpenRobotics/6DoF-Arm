@@ -145,6 +145,27 @@ def generate_launch_description():
                         'planner reads everything else as empty space.',
         ),
         DeclareLaunchArgument(
+            'grasp_clearance_radius', default_value='0.08',
+            description='Radius of the exclusion bubble around the detected '
+                        'object: cloud points inside it are the object itself, '
+                        'not obstacles. Raise it when the cup or nearby clutter '
+                        'blocks the approach to the cup.',
+        ),
+        DeclareLaunchArgument(
+            'obstacle_height_threshold', default_value='0.01',
+            description='Map points at or below this are ground. Keep it above '
+                        'the sweep z_min or it drops nothing.',
+        ),
+        DeclareLaunchArgument(
+            'enable_ground_plane_removal', default_value='false',
+            description='Fit and delete the work surface from the swept map, at '
+                        'whatever height and tilt it actually came out at. The '
+                        'z_min crop only removes a surface that landed exactly '
+                        'where the model says; this removes one that did not. '
+                        'Guarded: the fit is ignored unless it is near-level, '
+                        'low, and a large share of the cloud.',
+        ),
+        DeclareLaunchArgument(
             'approach_height', default_value='0.15',
             description='Hover this far above a grasp/place point, then descend. '
                         'Must exceed 0.085 + half the object height: the gripper '
@@ -216,6 +237,8 @@ def generate_launch_description():
             launch_arguments={
                 'planning_frame': planning_frame,
                 'carry_level': LaunchConfiguration('carry_level'),
+                'grasp_clearance_radius': LaunchConfiguration('grasp_clearance_radius'),
+                'obstacle_height_threshold': LaunchConfiguration('obstacle_height_threshold'),
                 'use_sim_time': LaunchConfiguration('use_sim_time'),
             }.items(),
         ),
@@ -294,6 +317,9 @@ def generate_launch_description():
                 'world_frame': planning_frame,
                 'frame_id': planning_frame,
                 'scan_posture': LaunchConfiguration('scan_posture'),
+                'enable_ground_plane_removal': ParameterValue(
+                    LaunchConfiguration('enable_ground_plane_removal'),
+                    value_type=bool),
                 'scan_waist_angles': ParameterValue(
                     LaunchConfiguration('scan_waist_angles'),
                     value_type=List[float]),

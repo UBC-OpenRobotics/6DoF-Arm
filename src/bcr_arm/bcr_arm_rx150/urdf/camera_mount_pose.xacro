@@ -11,20 +11,47 @@
   D435 sits a few cm inside the casing. Measure to that point, not to the
   casing, or fold the casing offset in here.
 
-  ##########################################################################
-  THESE ARE PLACEHOLDERS, COPIED FROM AN INVENTED SIM OFFSET. MEASURE THEM.
-  ##########################################################################
-  Nothing errors when they are wrong. The obstacle map and every detected
-  object simply come out shifted and rotated by the same amount, everywhere,
-  which reads as a broken pipeline rather than a bad number.
+  xyz is MEASURED. rpy is NOT; see the warning at the bottom.
 
-  The datum the measurement starts FROM is marked in sim by the green dot in
-  rx150_gripper_depth_camera.urdf.xacro (mount_ref_corner). Check the dot is on
-  the right feature before trusting anything measured from it.
+  ===========================================================================
+  Where xyz comes from
+  ===========================================================================
+  Measured by hand from the green dot (mount_ref_corner in
+  rx150_gripper_depth_camera.urdf.xacro) to the DEPTH camera origin, which is
+  the point camera_link names and the point this file must land on.
 
-  xyz is metres, rpy is radians, both relative to gripper_link.
+  The raw measurement was taken in a different frame from gripper_link, so it
+  is transformed here rather than copied. Do not paste new numbers in without
+  redoing this: the axes do not line up, and nothing errors if they are wrong.
+
+    measured frame                      gripper_link (REP-103)
+      x = across the gripper,             y = LEFT     (negated)
+          +x toward the RIGHT
+      y = height, +y up                   z = up       (as is)
+      z = out along the view              x = forward  (as is)
+
+    raw (mm)             x -1.930    y +26.525   z +37.660
+    in gripper_link axes x +37.660   y +1.930    z +26.525
+    green dot (m)        [0.03700, 0.01425, 0.02925]
+    dot + offset         [0.07466, 0.01618, 0.05577]
+
+  The dot is itself estimated to a few mm (the sim mesh has no screw holes), so
+  treat the last digit as decoration, not precision.
+
+  ===========================================================================
+  rpy IS STILL UNMEASURED
+  ===========================================================================
+  0 0 0 asserts the camera is mounted perfectly square to the gripper. Nobody
+  has checked that. It is the term that matters most for the obstacle map: a
+  rotation error does not shift the map, it SMEARS it, because each sweep
+  station views the scene from a different angle and lands the same surface in
+  a different place. 3 deg of pitch is about 26 mm of height error at 0.5 m,
+  on its own enough to lift the work surface above the sweep's z_min crop and
+  have the planner route around the table as if it were a wall.
+
+  If the map still comes out thick with a correct xyz, measure this next.
 -->
 <robot xmlns:xacro="http://www.ros.org/wiki/xacro">
-  <xacro:property name="cam_mount_xyz" value="0.0 0.0 0.065" scope="global"/>
+  <xacro:property name="cam_mount_xyz" value="0.07466 0.01618 0.05577" scope="global"/>
   <xacro:property name="cam_mount_rpy" value="0 0 0"         scope="global"/>
 </robot>

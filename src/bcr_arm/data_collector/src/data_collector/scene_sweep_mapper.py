@@ -112,6 +112,11 @@ class SceneSweepMapper(Node):
         self.declare_parameter('z_min',  -0.05)
         self.declare_parameter('z_max',   0.50)
         self.declare_parameter('max_input_range', 1.50)
+        self.declare_parameter('enable_ground_plane_removal', False)
+        self.declare_parameter('ground_plane_distance_threshold', 0.012)
+        self.declare_parameter('ground_plane_max_tilt_deg', 12.0)
+        self.declare_parameter('ground_plane_max_height', 0.12)
+        self.declare_parameter('ground_plane_min_fraction', 0.10)
         self.declare_parameter('enable_statistical_outlier_removal', False)
         self.declare_parameter('statistical_nb_neighbors', 20)
         self.declare_parameter('statistical_std_ratio', 2.0)
@@ -150,13 +155,24 @@ class SceneSweepMapper(Node):
             [float(self.get_parameter('z_min').value), float(self.get_parameter('z_max').value)],
         ], dtype=np.float32)
         self._max_input_range = max(0.0, float(self.get_parameter('max_input_range').value))
+        self._ground_enabled = bool(
+            self.get_parameter('enable_ground_plane_removal').value)
+        self._ground_distance = float(
+            self.get_parameter('ground_plane_distance_threshold').value)
+        self._ground_max_tilt = float(
+            self.get_parameter('ground_plane_max_tilt_deg').value)
+        self._ground_max_height = float(
+            self.get_parameter('ground_plane_max_height').value)
+        self._ground_min_fraction = float(
+            self.get_parameter('ground_plane_min_fraction').value)
         self._stat_enabled  = bool(self.get_parameter('enable_statistical_outlier_removal').value)
         self._stat_neighbors = int(self.get_parameter('statistical_nb_neighbors').value)
         self._stat_std_ratio = float(self.get_parameter('statistical_std_ratio').value)
         self._radius_enabled = bool(self.get_parameter('enable_radius_outlier_removal').value)
         self._radius_size    = float(self.get_parameter('radius_outlier_radius').value)
         self._radius_min_neighbors = int(self.get_parameter('radius_outlier_min_neighbors').value)
-        if (self._stat_enabled or self._radius_enabled) and o3d is None:
+        if (self._stat_enabled or self._radius_enabled
+                or self._ground_enabled) and o3d is None:
             self.get_logger().error(
                 'Outlier filtering was requested but Open3D is not importable; '
                 'continuing with crop + voxel only. Install open3d or set '
@@ -677,7 +693,89 @@ class SceneSweepMapper(Node):
             'Map: %d merged -> %d in bounds -> %d after voxel (%.3f m).'
             % (merged.shape[0], cropped.shape[0], points.shape[0], self._voxel_size)
         )
-        return self._remove_outliers(points)
+        return self._remove_outliers(self._remove_ground_plane(points))
+
+    def _remove_ground_plane(self, points: np.ndarray) -> np.ndarray:
+        """Drop the work surface the arm stands on, wherever it actually landed.
+
+        The z crop already removes a surface that sits exactly where the model
+        says it does. This exists for the case it does NOT: a small camera-pose
+        error tilts the whole map, the surface rises above z_min on one side,
+        and the planner projects a 1.2 m table straight down into the 2D grid as
+        a wall. Fitting the plane instead of assuming its height removes it at
+        whatever height and tilt it came out at.
+
+        Three guards, because deleting the biggest plane in the scene is a
+        destructive default. The fit is discarded unless it is
+          - near-horizontal (within ground_plane_max_tilt_deg of level), so a
+            wall or the side of a box is never mistaken for the ground;
+          - low (its height under the base within ground_plane_max_height), so a
+            table-height obstacle top is not mistaken for the ground; and
+          - big (at least ground_plane_min_fraction of the cloud), so a small
+            flat patch on some object is not mistaken for the ground.
+        Failing any of them keeps every point and says which one failed.
+        """
+        if points.shape[0] == 0 or o3d is None or not self._ground_enabled:
+            return points
+        # segment_plane needs a few points to fit at all, and a fit from a
+        # handful of them is not evidence of a floor.
+        if points.shape[0] < 100:
+            return points
+
+        cloud = o3d.geometry.PointCloud()
+        cloud.points = o3d.utility.Vector3dVector(points.astype(np.float64))
+        try:
+            model, inliers = cloud.segment_plane(
+                distance_threshold=self._ground_distance,
+                ransac_n=3,
+                num_iterations=200,
+            )
+        except RuntimeError as exc:            # no plane found in the cloud
+            self.get_logger().info('Ground-plane fit found nothing (%s).' % exc)
+            return points
+
+        a, b, c, d = (float(v) for v in model)
+        normal = np.array([a, b, c], dtype=float)
+        norm = float(np.linalg.norm(normal))
+        if norm < 1e-9:
+            return points
+        # Angle to vertical, and the plane's height directly under the base.
+        tilt_deg = float(np.degrees(np.arccos(min(1.0, abs(c) / norm))))
+        height = float('inf') if abs(c) < 1e-9 else -d / c
+        fraction = len(inliers) / float(points.shape[0])
+
+        reasons = []
+        if tilt_deg > self._ground_max_tilt:
+            reasons.append('tilt %.1f deg > %.1f' % (tilt_deg, self._ground_max_tilt))
+        if abs(height) > self._ground_max_height:
+            reasons.append('height %+.3f m outside +-%.3f'
+                           % (height, self._ground_max_height))
+        if fraction < self._ground_min_fraction:
+            reasons.append('only %.0f%% of the cloud < %.0f%%'
+                           % (100.0 * fraction, 100.0 * self._ground_min_fraction))
+        if reasons:
+            self.get_logger().info(
+                'Ground-plane removal SKIPPED (%d inlier(s), %s). Keeping all '
+                '%d point(s).' % (len(inliers), '; '.join(reasons), points.shape[0])
+            )
+            return points
+
+        mask = np.ones(points.shape[0], dtype=bool)
+        mask[np.asarray(inliers, dtype=np.int64)] = False
+        kept = points[mask]
+        self.get_logger().info(
+            'Ground-plane removal: plane at z=%+.3f m, tilt %.1f deg -> %d -> %d '
+            'point(s) (%d removed, %.0f%%).'
+            % (height, tilt_deg, points.shape[0], kept.shape[0],
+               points.shape[0] - kept.shape[0], 100.0 * fraction)
+        )
+        if kept.shape[0] == 0:
+            self.get_logger().error(
+                'Ground-plane removal emptied the map; keeping it unfiltered. '
+                'The fit almost certainly caught the scene, not the floor.'
+            )
+            return points
+        return kept
 
     def _remove_outliers(self, points: np.ndarray) -> np.ndarray:
         """Statistical + radius outlier removal (Open3D).

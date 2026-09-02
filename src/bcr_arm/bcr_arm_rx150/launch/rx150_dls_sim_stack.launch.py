@@ -4,6 +4,7 @@ from launch.conditions import IfCondition
 from launch.launch_description_sources import PythonLaunchDescriptionSource
 from launch.substitutions import LaunchConfiguration, PathJoinSubstitution
 from launch_ros.actions import Node
+from launch_ros.parameter_descriptions import ParameterValue
 from launch_ros.substitutions import FindPackageShare
 
 
@@ -63,6 +64,22 @@ def generate_launch_description():
                         '(pose_level + exact IK).',
         ),
         DeclareLaunchArgument('planning_frame', default_value='rx150/base_link'),
+        DeclareLaunchArgument(
+            'grasp_clearance_radius', default_value='0.08',
+            description='Cloud points within this radius of the grasp anchor are '
+                        'treated as the target object and excluded from collision '
+                        'checks -- without it the cup blocks the reach to itself. '
+                        'Raise it when the cup sits among clutter the arm must '
+                        'push past; it also blinds the planner to anything real '
+                        'inside the sphere, so keep it just over the object.',
+        ),
+        DeclareLaunchArgument(
+            'obstacle_height_threshold', default_value='0.01',
+            description='Map points at or below this height are ground, not '
+                        'obstacles. Must sit ABOVE the sweep z_min crop or it '
+                        'drops nothing and the work surface is planned around as '
+                        'a wall; the planner warns when that happens.',
+        ),
         IncludeLaunchDescription(
             PythonLaunchDescriptionSource([
                 PathJoinSubstitution([
@@ -151,6 +168,12 @@ def generate_launch_description():
                 # budget bought roughly 30 nodes, which is not enough for a
                 # 5-DOF search to route around anything.
                 'rrt_time_budget_sec': 8.0,
+                'grasp_clearance_radius': ParameterValue(
+                    LaunchConfiguration('grasp_clearance_radius'),
+                    value_type=float),
+                'obstacle_height_threshold': ParameterValue(
+                    LaunchConfiguration('obstacle_height_threshold'),
+                    value_type=float),
             }],
         ),
         Node(

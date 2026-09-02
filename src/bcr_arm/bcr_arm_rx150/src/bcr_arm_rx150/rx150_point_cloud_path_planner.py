@@ -468,6 +468,19 @@ class Rx150PointCloudPathPlanner(Node):
 
     def _build_occupancy(self, points: np.ndarray) -> set[GridIndex]:
         obstacle_points = points[points[:, 2] > self._obstacle_height_threshold]
+        # Say what the ground filter did. Dropping 0 of N means the threshold
+        # sits BELOW everything the map contains -- usually because the sweep
+        # already cropped at a higher z -- so it is not filtering the ground at
+        # all, and every surface in the map, floor included, becomes a wall in
+        # the 2D projection below.
+        dropped = points.shape[0] - obstacle_points.shape[0]
+        if dropped == 0 and points.shape[0] > 0:
+            self.get_logger().warning(
+                'obstacle_height_threshold %.3f m dropped 0 of %d map point(s): '
+                'the map starts above it, so nothing is being treated as ground.'
+                % (self._obstacle_height_threshold, points.shape[0]),
+                throttle_duration_sec=30.0,
+            )
         occupied: set[GridIndex] = set()
         for point in obstacle_points:
             idx = self._world_to_grid(point[:2])
