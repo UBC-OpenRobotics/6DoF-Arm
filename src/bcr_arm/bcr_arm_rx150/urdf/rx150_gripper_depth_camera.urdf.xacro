@@ -42,12 +42,16 @@
 -->
 <robot xmlns:xacro="http://www.ros.org/wiki/xacro">
 
+  <!-- The mounting pose lives in camera_mount_pose.xacro, shared with the
+       hardware description, so the two cannot drift apart. -->
+  <xacro:include filename="$(find bcr_arm_rx150)/urdf/camera_mount_pose.xacro"/>
+
   <!-- Camera mounted on top of the wrist_rotate servo (the servo closest to the
        gripper)-->
   <joint name="$(arg robot_name)_gripper_camera_mount" type="fixed">
     <parent link="$(arg robot_name)/gripper_link"/>
     <child link="$(arg robot_name)/gripper_camera_link"/>
-    <origin xyz="0.0 0.0 0.065" rpy="0 0 0"/>
+    <origin xyz="${cam_mount_xyz}" rpy="${cam_mount_rpy}"/>
   </joint>
 
   <link name="$(arg robot_name)/gripper_camera_link">
@@ -92,19 +96,24 @@
        It is NOT the camera and NOT part of the robot. Delete or switch off
        once the mount pose is agreed.
 
-       The datum as currently understood
-         - the square wrist servo housing, which is this link's own body
-         - its TOP face, the face the camera block sits above, so +z
-         - the corner of that face nearest the LEFT finger, so +x and +y
+       The datum is a SCREW HOLE on the LEFT face of the square wrist servo
+       housing (this link's own body), near the top front corner - the corner
+       closest to the left finger. The sim mesh has no screw holes, so the
+       position below is ESTIMATED, not read off geometry.
 
-       Read off gripper.stl in gripper_link coordinates
-         x   0.04300   front face, the end the gripper bar bolts on to
-         y   0.01425   left half width, housing measures 28.5 mm across
-         z   0.03525   top face
+       The left face is the plane y = 0.01425 (half of the 28.5 mm housing
+       width), spanning x 0.000 to 0.043 and z -0.0092 to 0.0333. Its top front
+       corner is x 0.0430, z 0.0353. The hole was described as one marker-width
+       diagonally in from that corner, taken as a full 6 mm blob diameter along
+       EACH in-plane axis - back along x and down along z - so the dot sits
+       diagonally adjacent to where it started.
 
-       The real top face is chamfered - 24.5 mm across at the very top,
-       widening to 28.5 mm about 2 mm below. The point below is the sharp
-       corner of the idealised box, which is what a caliper reads to.
+       Tune it with the two properties below. Only x and z are free; y is fixed
+       by the face the hole is on.
+
+       Treat this as good to a few mm at best. Everything the camera reports is
+       measured from this point, so an error here shifts the whole obstacle map
+       by the same amount, silently.
 
        Green, not red, only because the camera block above it is already
        Gazebo/Red and a red dot would vanish against it.
@@ -115,12 +124,19 @@
   -->
   <xacro:arg name="show_mount_ref" default="true"/>
 
+  <!-- Hole centre, as offsets BACK and DOWN from the top front corner of the
+       left face (x 0.0430, z 0.0353). One 6 mm blob diameter each. -->
+  <xacro:property name="mount_ref_back" value="0.006"/>
+  <xacro:property name="mount_ref_down" value="0.006"/>
+
   <xacro:if value="$(arg show_mount_ref)">
 
     <joint name="$(arg robot_name)_mount_ref_corner_joint" type="fixed">
       <parent link="$(arg robot_name)/gripper_link"/>
       <child link="$(arg robot_name)/mount_ref_corner"/>
-      <origin xyz="0.04300 0.01425 0.03525" rpy="0 0 0"/>
+      <origin
+        xyz="${0.0430 - mount_ref_back} 0.01425 ${0.03525 - mount_ref_down}"
+        rpy="0 0 0"/>
     </joint>
 
     <link name="$(arg robot_name)/mount_ref_corner">

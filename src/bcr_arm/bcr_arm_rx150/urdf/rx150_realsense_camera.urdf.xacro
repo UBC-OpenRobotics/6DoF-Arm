@@ -55,9 +55,9 @@
 -->
 <robot xmlns:xacro="http://www.ros.org/wiki/xacro">
 
-  <!-- Mounting pose, relative to the gripper link. PLACEHOLDER, measure it. -->
-  <xacro:property name="cam_mount_xyz" value="0.0 0.0 0.065"/>
-  <xacro:property name="cam_mount_rpy" value="0 0 0"/>
+  <!-- Mounting pose, shared with the sim description so the two cannot drift
+       apart. PLACEHOLDER, measure it. -->
+  <xacro:include filename="$(find bcr_arm_rx150)/urdf/camera_mount_pose.xacro"/>
 
   <joint name="$(arg robot_name)_camera_mount" type="fixed">
     <parent link="$(arg robot_name)/gripper_link"/>

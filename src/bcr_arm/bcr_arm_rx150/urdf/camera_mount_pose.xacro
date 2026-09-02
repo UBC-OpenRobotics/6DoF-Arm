@@ -1,0 +1,30 @@
+<?xml version="1.0"?>
+<!--
+  THE camera mounting pose. Single source of truth, included by both camera
+  descriptions so sim and hardware cannot drift apart.
+
+    rx150_gripper_depth_camera.urdf.xacro   sim, Gazebo depth sensor
+    rx150_realsense_camera.urdf.xacro       hardware, RealSense driver
+
+  Both bolt their camera link onto rx150/gripper_link with this pose, and both
+  mean the same physical point - the camera's own reference origin, which for a
+  D435 sits a few cm inside the casing. Measure to that point, not to the
+  casing, or fold the casing offset in here.
+
+  ##########################################################################
+  THESE ARE PLACEHOLDERS, COPIED FROM AN INVENTED SIM OFFSET. MEASURE THEM.
+  ##########################################################################
+  Nothing errors when they are wrong. The obstacle map and every detected
+  object simply come out shifted and rotated by the same amount, everywhere,
+  which reads as a broken pipeline rather than a bad number.
+
+  The datum the measurement starts FROM is marked in sim by the green dot in
+  rx150_gripper_depth_camera.urdf.xacro (mount_ref_corner). Check the dot is on
+  the right feature before trusting anything measured from it.
+
+  xyz is metres, rpy is radians, both relative to gripper_link.
+-->
+<robot xmlns:xacro="http://www.ros.org/wiki/xacro">
+  <xacro:property name="cam_mount_xyz" value="0.0 0.0 0.065" scope="global"/>
+  <xacro:property name="cam_mount_rpy" value="0 0 0"         scope="global"/>
+</robot>

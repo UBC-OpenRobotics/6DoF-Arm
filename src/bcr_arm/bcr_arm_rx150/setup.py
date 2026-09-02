@@ -20,6 +20,7 @@ setup(
             'launch/rx150_pick_place_sim.launch.py',
         ]),
         ('share/' + package_name + '/urdf', [
+            'urdf/camera_mount_pose.xacro',                 # shared: the mount pose
             'urdf/rx150_gripper_depth_camera.urdf.xacro',   # sim: Gazebo depth sensor
             'urdf/rx150_realsense_camera.urdf.xacro',       # hardware: mounting link only
         ]),
