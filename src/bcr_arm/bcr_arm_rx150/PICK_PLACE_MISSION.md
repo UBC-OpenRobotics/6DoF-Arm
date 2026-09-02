@@ -48,6 +48,7 @@ handled for you.
 | `phase_delay_sec:=0.0` | `2.0` | drop the debugging pause between phases (~20 s/cycle) |
 | `cup_classes:='[cup]'` | `[cup, frisbee, bowl, toilet]` | narrow the accepted labels — **priority order, see §7** |
 | `observe_joints:='[0.0,-1.65,1.07,1.25,0.0]'` | off (`[]`) | add a fixed look-down pose; rarely needed — the sweep finds the cup |
+| `scan_waist_angles:='[-0.785,0.0,0.785]'` | full circle (`[]`) | sweep only a 90 deg front sector (±45°) instead of all 8 stations — faster, but the planner reads the unswept rest as empty |
 
 **Terminal 2 — keyboard control:**
 
@@ -103,6 +104,7 @@ Every flag from §1 applies. Three more matter on the first hardware run:
 | `goal_fallback_xyz:='[x, y, z]'` | `[0.20, 0.22, 0.06]` | **set this every time** — the drop-off point is a fixed guess, not something the camera found |
 | `min_depth_m:=0.2` | `0.2` | already raised for a D435 (cannot focus closer). Lower it for a D405 |
 | `cup_classes:='[cup]'` | `[cup]` | change if the detector labels your cup something else (`ros2 topic echo /perception/detections`) |
+| `scan_waist_angles:='[-0.785,0.0,0.785]'` | full circle (`[]`) | sweep only a 90 deg front sector (±45°) instead of all 8 stations — faster, but the planner reads the unswept rest as empty |
 
 Both stubs default off, so this runs the real pipeline. To exercise mission logic with
 no camera and no physical scan:
@@ -228,6 +230,7 @@ ros2 launch bcr_arm_rx150 rx150_pick_place_sim.launch.py \
 | `yolo_confidence` | `0.15` | `0.5` | low in sim on purpose; see §7 |
 | `goal_fallback_xyz` | `[0.20, 0.18, 0.16]` | `[0.20, 0.22, 0.06]` | **placeholder** drop-off — the detector has no goal class |
 | `min_depth_m` | `0.2` | `0.2` | depths below this are invalid; a D435 cannot focus closer |
+| `scan_waist_angles` | `[]` | `[]` | waist stations (radians) the sweep stops at; `[]` = 8 round the full circle. `'[-0.785,0.0,0.785]'` scans a 90 deg front sector |
 | `detection_ttl_sec` | `300.0` | `300.0` | a sighting older than this is not an answer — **must exceed one sweep** |
 | `approach_height` | `0.15` | `0.15` | hover this far above a grasp point — **hard geometric floor, see below** |
 | `approach_back_off` | `0.045` | `0.045` | how far *behind* the object the hover sits, so the gripper descends diagonally |

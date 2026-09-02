@@ -8,6 +8,7 @@ from bcr_arm_common import rx150_kinematics
 import numpy as np
 import rclpy
 from geometry_msgs.msg import PointStamped, PoseStamped
+from rclpy.exceptions import ParameterUninitializedException
 from rclpy.executors import SingleThreadedExecutor
 from rclpy.node import Node
 from rclpy.qos import DurabilityPolicy, QoSProfile, ReliabilityPolicy, qos_profile_sensor_data
@@ -28,6 +29,12 @@ except ImportError:  # pragma: no cover - depends on the environment
 # cover the full circle against the D435i's 54.5 deg horizontal FOV; respacing
 # them evenly opens a hole rather than closing one.
 SCAN_WAIST_ANGLES = [-3.10, -2.356, -1.571, -0.785, 0.0, 0.785, 1.571, 2.356]
+
+# waist travel limits from interbotix_xsarm_descriptions rx150.urdf.xacro
+# (-180 deg .. +180 deg). Stations are clamped to these, for the same reason the
+# wrist offsets are: a station past the stop never reports arrival and the sweep
+# hangs on settle instead of failing.
+WAIST_ANGLE_LIMITS = (-3.142, 3.142)
 
 # Wrist-angle offsets (radians) applied to the scan posture at EVERY waist
 # station -- the arm takes one look per offset before moving on.
@@ -115,6 +122,7 @@ class SceneSweepMapper(Node):
         self.declare_parameter('home_joints', [0.0, -0.65, -0.20, -1.00, 0.0])
         self.declare_parameter('scan_posture',    'tilted')  # 'tilted' | 'level'
         self.declare_parameter('scan_tucked_joints', [float('nan')] * 4)
+        self.declare_parameter('scan_waist_angles', list(SCAN_WAIST_ANGLES))
         self.declare_parameter('scan_wrist_offsets', list(SCAN_WRIST_OFFSETS))
         self.declare_parameter('scan_wrist_settle_sec', 1.2)
         self.declare_parameter('scan_return_to_neutral', True)
@@ -160,6 +168,7 @@ class SceneSweepMapper(Node):
                              self.get_parameter('home_joints').value]
         self._scan_joints = self._resolve_scan_posture()
         self._wrist_offsets = self._resolve_wrist_offsets()
+        self._waist_angles = self._resolve_waist_angles()
         self._wrist_settle_sec = max(
             0.0, float(self.get_parameter('scan_wrist_settle_sec').value))
         self._return_to_neutral = bool(
@@ -269,6 +278,53 @@ class SceneSweepMapper(Node):
             '%d look(s) per waist station, wrist_angle %s'
             % (len(offsets), [round(base + o, 3) for o in offsets]))
         return offsets
+
+    def _resolve_waist_angles(self):
+        """Waist stations to scan, clamped to the servo and de-duplicated.
+
+        Empty means "use the default full circle", so a launch file can pass
+        [] to mean "unchanged" without restating the default and letting the two
+        drift apart.
+
+        Nothing here checks that the stations actually COVER the scene. Against
+        the D435i's 54.5 deg horizontal FOV, stations closer than ~45 deg apart
+        overlap and anything wider leaves a blind wedge between them; the sweep
+        will happily scan a sparse ring and report success.
+        """
+        # An empty list arrives as UNINITIALIZED, not as an empty array: neither
+        # `-p scan_waist_angles:="[]"` nor a launch ParameterValue typed
+        # List[float] can tell rclpy what an empty [] holds, so the declared
+        # default is discarded rather than kept. Treat that as "not specified".
+        try:
+            value = self.get_parameter('scan_waist_angles').value or []
+        except ParameterUninitializedException:
+            value = []
+        raw = [float(v) for v in value]
+        raw = [v for v in raw if v == v]                 # v==v -> not NaN
+        if not raw:
+            raw = list(SCAN_WAIST_ANGLES)
+
+        low, high = WAIST_ANGLE_LIMITS
+        angles, clamped = [], []
+        for angle in raw:
+            target = min(max(angle, low), high)
+            if abs(target - angle) > 1e-9:
+                clamped.append((angle, target))
+                angle = target
+            if not any(abs(angle - kept) < 1e-9 for kept in angles):
+                angles.append(angle)
+        if clamped:
+            self.get_logger().warning(
+                'waist stations clamped to the joint limit [%.3f, %.3f]: %s'
+                % (low, high,
+                   ', '.join('%+.3f->%+.3f' % pair for pair in clamped)))
+
+        span = max(angles) - min(angles) if len(angles) > 1 else 0.0
+        self.get_logger().info(
+            '%d waist station(s) spanning %.0f deg: %s'
+            % (len(angles), np.degrees(span),
+               [round(np.degrees(a)) for a in angles]))
+        return angles
 
     def _station_joints(self, waist: float, offset: float) -> list[float]:
         """Full 5-joint pose for one look: a waist station plus a wrist offset."""
@@ -454,7 +510,7 @@ class SceneSweepMapper(Node):
 
         neutral = self._wrist_offsets[0]
         multi_look = len(self._wrist_offsets) > 1
-        for waist in SCAN_WAIST_ANGLES:
+        for waist in self._waist_angles:
             station = 'scan_%+.0fdeg' % np.degrees(waist)
             for index, offset in enumerate(self._wrist_offsets):
                 if self._abort_requested:

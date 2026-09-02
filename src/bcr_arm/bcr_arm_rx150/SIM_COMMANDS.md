@@ -276,7 +276,9 @@ see PICK_PLACE_MISSION.md §1 for the table.
 **The sweep is what finds the cup**, not a hardcoded vector and not a fixed observation
 pose. The detector runs throughout the sweep, every sighting is kept, and the sweep turns
 the camera through a full circle — so the cup can be moved anywhere in the workspace
-between runs and still be found. Measured: cup at `(0.300, 0.000, 0.090)` reported as
+between runs and still be found. Narrow that to the sector you actually use with
+`scan_waist_angles:='[-0.785,0.0,0.785]'` (90°, ±45° from the front, 3 stations not 8);
+anything outside it is neither searched for the cup nor mapped as an obstacle. Measured: cup at `(0.300, 0.000, 0.090)` reported as
 `(0.304, 0.001, 0.090)`, answered in ~1 ms from cache.
 
 The scene has a small cup on a book-stack riser at `[0.30, 0.0]`, top at z = 0.060. The

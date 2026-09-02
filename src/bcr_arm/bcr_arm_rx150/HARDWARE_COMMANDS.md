@@ -259,8 +259,8 @@ RealSense → scene_point_cloud (relay) → scene_sweep_mapper → /planning/poi
 RealSense → YOLO → localization_3d_node → vision_bridge → /vision/object_point
 ```
 
-⚠️ **The sweep physically moves the arm** through eight scan poses. Clear the
-workspace before starting.
+⚠️ **The sweep physically moves the arm** through eight scan poses — fewer if
+you pass `scan_waist_angles`. Clear the workspace before starting.
 
 ```bash
 # Terminal 1 — bring up the mission (nothing moves yet; waits for a start trigger)
@@ -286,6 +286,7 @@ exercising mission logic without a camera or a physical scan.
 | `cup_classes` | `[cup]` | the detector calls your cup something else (check `ros2 topic echo /perception/detections`) |
 | `grasp_value` | `0.3` | **the main tuning dial** — how far to close on the cup |
 | `grasp_z_offset` | `0.018` | move the grab point up or down the cup's body |
+| `scan_waist_angles` | `[]` (full circle) | the scene sits in one sector — `'[-0.785,0.0,0.785]'` sweeps 90° (±45°) in 3 stations instead of 8 |
 
 Or start immediately on launch with `autostart:=true` (skips the trigger — only once
 you trust the scene).

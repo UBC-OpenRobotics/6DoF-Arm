@@ -28,6 +28,13 @@ Args:
   (The sweep is always the REAL camera sweep in sim -- data_collector
    scene_sweep_mapper in triggered mode. There is no canned-cloud option here;
    phase 1 scans for real and waits for sweep:complete before planning.)
+  scan_waist_angles  ([]) waist angles in RADIANS the sweep stops at, in order.
+                   Empty keeps the node default: 8 stations round the full
+                   circle. Pass a shorter list to scan only the sector the scene
+                   occupies -- a 90 deg front sector is '[-0.785,0.0,0.785]'.
+                   Keep stations <=45 deg apart or the camera's 54.5 deg FOV
+                   leaves a blind wedge. ONLY THE SWEPT SECTOR IS MAPPED; the
+                   planner reads the rest as empty space.
   planning_frame   (rx150/base_link)
 """
 
@@ -125,6 +132,17 @@ def generate_launch_description():
                         "more of the scene. See SCAN_POSTURES in "
                         "scene_sweep_mapper.py. Override the joints outright "
                         "with the node's scan_tucked_joints parameter.",
+        ),
+        DeclareLaunchArgument(
+            'scan_waist_angles', default_value='[]',
+            description='Waist angles (radians) the sweep stops at, in order. '
+                        'Empty keeps the node default: 8 stations round the full '
+                        'circle. Pass a shorter list to scan only the sector the '
+                        'scene occupies -- a 90 deg front sector is '
+                        "'[-0.785, 0.0, 0.785]'. Stations must be no more than "
+                        "~45 deg apart or the D435i's 54.5 deg FOV leaves a blind "
+                        'wedge between them. ONLY THE SWEPT SECTOR IS MAPPED; the '
+                        'planner reads everything else as empty space.',
         ),
         DeclareLaunchArgument(
             'approach_height', default_value='0.15',
@@ -276,6 +294,9 @@ def generate_launch_description():
                 'world_frame': planning_frame,
                 'frame_id': planning_frame,
                 'scan_posture': LaunchConfiguration('scan_posture'),
+                'scan_waist_angles': ParameterValue(
+                    LaunchConfiguration('scan_waist_angles'),
+                    value_type=List[float]),
                 # Crop the map to the arm's actual workspace, above the floor.
                 #
                 # The node defaults (x/y +-1.60, z_min -0.05) keep the whole
