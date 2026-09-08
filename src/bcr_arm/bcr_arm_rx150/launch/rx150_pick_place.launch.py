@@ -39,9 +39,10 @@ Args:
   goal_fallback_xyz  PLACEHOLDER drop-off point.
   min_depth_m      (0.05) raise to ~0.2 for a D435, which cannot focus closer.
   scan_waist_angles  ([]) waist angles in RADIANS the sweep stops at, in order.
-                   Empty keeps the node default: 8 stations round the full
-                   circle. Pass a shorter list to scan only the sector the scene
-                   occupies -- a 90 deg front sector is '[-0.785,0.0,0.785]'.
+                   Empty keeps the node default: a 90 deg front sector in 3
+                   stations, '[-0.785,0.0,0.785]'. Pass a list to scan somewhere
+                   else; the full circle is 8 stations,
+                   '[-3.10,-2.356,-1.571,-0.785,0.0,0.785,1.571,2.356]'.
                    Keep stations <=45 deg apart or the camera's 54.5 deg FOV
                    leaves a blind wedge. ONLY THE SWEPT SECTOR IS MAPPED; the
                    planner reads the rest as empty space.
@@ -52,7 +53,11 @@ from launch import LaunchDescription
 from launch.actions import DeclareLaunchArgument, IncludeLaunchDescription
 from launch.conditions import IfCondition, UnlessCondition
 from launch.launch_description_sources import PythonLaunchDescriptionSource
-from launch.substitutions import LaunchConfiguration, PathJoinSubstitution
+from launch.substitutions import (
+    LaunchConfiguration,
+    PathJoinSubstitution,
+    PythonExpression,
+)
 from launch_ros.actions import Node
 from typing import List
 
@@ -92,6 +97,25 @@ def generate_launch_description():
                         'scan runs ~2 min in sim and slower on real servos.'),
         DeclareLaunchArgument('use_vision_stub', default_value='false'),
         DeclareLaunchArgument('use_sweep_stub', default_value='false'),
+        # Send the orchestrator's Cartesian moves STRAIGHT to the IK executor,
+        # with the obstacle planner out of the loop. Everything else stays: the
+        # sweep still runs, vision still detects, and the orchestrator still
+        # sequences hover -> open -> descend -> close.
+        #
+        # WHY IT EXISTS: it separates "can the arm reach where vision says the
+        # cup is" from "can the planner find a way there". The first is the
+        # question you ask after re-measuring the camera extrinsics.
+        #
+        # WHAT YOU GIVE UP: all collision checking. The gripper drives straight
+        # at the target through whatever is in between, and the swept map is
+        # built but nothing consumes it. Do not use this to get past a planner
+        # that is refusing a genuinely blocked scene.
+        DeclareLaunchArgument(
+            'bypass_planner', default_value='false',
+            description='Route the orchestrator straight to the IK executor, '
+                        'skipping the obstacle planner. No collision checking. '
+                        'For reach/extrinsics validation.',
+        ),
         DeclareLaunchArgument(
             'carry_level', default_value='false',
             description='Keep the gripper level so a grasped cup cannot tip.',
@@ -115,13 +139,14 @@ def generate_launch_description():
         DeclareLaunchArgument(
             'scan_waist_angles', default_value='[]',
             description='Waist angles (radians) the sweep stops at, in order. '
-                        'Empty keeps the node default: 8 stations round the full '
-                        'circle. Pass a shorter list to scan only the sector the '
-                        'scene occupies -- a 90 deg front sector is '
-                        "'[-0.785, 0.0, 0.785]'. Stations must be no more than "
-                        "~45 deg apart or the D435i's 54.5 deg FOV leaves a blind "
-                        'wedge between them. ONLY THE SWEPT SECTOR IS MAPPED; the '
-                        'planner reads everything else as empty space.',
+                        'Empty keeps the node default: a 90 deg front sector in '
+                        "3 stations, '[-0.785, 0.0, 0.785]'. Pass a list to scan "
+                        'somewhere else; the full circle is 8 stations, '
+                        '\'[-3.10,-2.356,-1.571,-0.785,0.0,0.785,1.571,2.356]\'. Stations '
+                        "must be no more than ~45 deg apart or the D435i's "
+                        '54.5 deg FOV leaves a blind wedge between them. ONLY '
+                        'THE SWEPT SECTOR IS MAPPED; the planner reads '
+                        'everything else as empty space.',
         ),
         DeclareLaunchArgument(
             'grasp_clearance_radius', default_value='0.08',
@@ -238,6 +263,7 @@ def generate_launch_description():
                 'carry_level': LaunchConfiguration('carry_level'),
                 'grasp_clearance_radius': LaunchConfiguration('grasp_clearance_radius'),
                 'obstacle_height_threshold': LaunchConfiguration('obstacle_height_threshold'),
+                'bypass_planner': LaunchConfiguration('bypass_planner'),
             }.items(),
         ),
 
@@ -323,6 +349,22 @@ def generate_launch_description():
             parameters=[{
                 'planning_frame': planning_frame,
                 'autostart': LaunchConfiguration('autostart'),
+                # Normally /cartesian_target, which the planner owns. With
+                # bypass_planner the same PointStamped goes to the IK
+                # executor's own input instead, so the planner sees nothing
+                # and the move is solved directly.
+                #
+                # The sweep also drives that executor, on
+                # /ik_waypoint_target_pose. Different target topic, but the
+                # SAME /motion/status channel, so the executor reports only on
+                # POINT targets -- reporting on the sweep's pose targets aborts
+                # the mission mid-scan. See _drives_mission in
+                # rx150_dls_ik_executor.py.
+                'cartesian_target_topic': PythonExpression([
+                    "'/ik_waypoint_target' if '",
+                    LaunchConfiguration('bypass_planner'),
+                    "'.lower() in ('true', '1') else '/cartesian_target'",
+                ]),
                 # Orchestrator toggles the level constraint on/off around the
                 # grasp so only the carrying moves are constrained.
                 'carry_level': LaunchConfiguration('carry_level'),

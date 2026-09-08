@@ -51,16 +51,29 @@ docker compose --profile hardware run --rm --service-ports rx150-hardware
 **Minimal — arm + IK only (recommended until the RealSense is wired):**
 ```bash
 # run from src/bcr_arm/ in your checkout
-docker compose --profile hardware run --rm --service-ports rx150-hardware \
-  ros2 launch bcr_arm_rx150 rx150_dls_stack.launch.py minimal:=true
+docker compose run --rm --service-ports rx150-hardware bash -lc \
+  "source /workspaces/bcr_arm/install/setup.bash && \
+   ros2 launch bcr_arm_rx150 rx150_dls_stack.launch.py minimal:=true"
 ```
 
-The launch runs the in-container workspace setup + build, then `rx150_dls_stack.launch.py`.
-Always present:
+> **Why the `bash -lc "source ... && ..."` wrapper?** Passing a command to
+> `docker compose run` *replaces* the service's `command:`, and that `command:` is
+> what sourced the workspace. The image entrypoint only sources
+> `/opt/ros/humble`, so a bare `... rx150-hardware ros2 launch ...` fails with
+> `package 'bcr_arm_rx150' not found`. Source it yourself whenever you override
+> the command. The no-argument form above needs no wrapper — it keeps the
+> service's own `command:`, which additionally runs `setup_workspace.sh`
+> (rosdep + `colcon build`). The overrides skip that, so build first if sources
+> changed.
+
+Either way you get `rx150_dls_stack.launch.py`. Always present:
 
 - `rx150_control.launch.py` — the Interbotix RX-150 control launch (the **real** low-level
   driver, `xs_sdk`), which talks to the motors over the U2D2 and publishes `/rx150/joint_states`
-- RViz (`use_rviz:=true` by default) showing the live robot model
+- RViz (`use_rviz:=true` by default) on `rviz/rx150_dls_stack.rviz` — robot model,
+  TF, the swept obstacle map (`/planning/point_cloud`), the planned path and the
+  planning markers, plus a `LiveCameraCloud` display for the raw RealSense cloud
+  that starts unticked. Override with `rvizconfig:=/path/to.rviz`.
 - `rx150_dls_ik_executor` — the custom DLS IK solver in **`group`** command mode
   (`interbotix_xs_msgs/JointGroupCommand` on `/rx150/commands/joint_group`), with
   `world_frame: rx150/base_link` and **conservative motion params** (slow velocity, small
@@ -227,7 +240,7 @@ There is also a one-shot CLI (spins up its own node) and a `Float64` channel:
 ```bash
 ros2 run bcr_arm_rx150 rx150_gripper_controller --state open      # or: --state close
 ros2 run bcr_arm_rx150 rx150_gripper_controller --position 0.7 --ros-args -p command_units:=normalized
-ros2 topic pub --once /rx150/gripper_position std_msgs/msg/Float64 '{data: 0.7}'
+1ros2 topic pub --once /rx150/gripper_position std_msgs/msg/Float64 '{data: 0.7}'
 ```
 
 > **Units + safety (read before first grip).** The launch ships `command_units:=normalized`, so
@@ -259,14 +272,16 @@ RealSense → scene_point_cloud (relay) → scene_sweep_mapper → /planning/poi
 RealSense → YOLO → localization_3d_node → vision_bridge → /vision/object_point
 ```
 
-⚠️ **The sweep physically moves the arm** through eight scan poses — fewer if
-you pass `scan_waist_angles`. Clear the workspace before starting.
+⚠️ **The sweep physically moves the arm** through three scan poses across the 90°
+front sector — more if you widen `scan_waist_angles`. Clear the workspace before
+starting.
 
 ```bash
 # Terminal 1 — bring up the mission (nothing moves yet; waits for a start trigger)
 # run from src/bcr_arm/ in your checkout
-docker compose run --rm --service-ports rx150-hardware \
-  ros2 launch bcr_arm_rx150 rx150_pick_place.launch.py
+docker compose run --rm --service-ports rx150-hardware bash -lc \
+  "source /workspaces/bcr_arm/install/setup.bash && \
+   ros2 launch bcr_arm_rx150 rx150_pick_place.launch.py carry_level:=true"
 
 # Terminal 2 — start the mission
 docker compose exec rx150-hardware bash -lc "source /workspaces/bcr_arm/install/setup.bash && \
@@ -286,7 +301,7 @@ exercising mission logic without a camera or a physical scan.
 | `cup_classes` | `[cup]` | the detector calls your cup something else (check `ros2 topic echo /perception/detections`) |
 | `grasp_value` | `0.3` | **the main tuning dial** — how far to close on the cup |
 | `grasp_z_offset` | `0.018` | move the grab point up or down the cup's body |
-| `scan_waist_angles` | `[]` (full circle) | the scene sits in one sector — `'[-0.785,0.0,0.785]'` sweeps 90° (±45°) in 3 stations instead of 8 |
+| `scan_waist_angles` | `[]` (90° front sector, 3 stations) | the scene sits outside ±45° — `'[-3.10,-2.356,-1.571,-0.785,0.0,0.785,1.571,2.356]'` sweeps the full circle in 8 stations |
 
 Or start immediately on launch with `autostart:=true` (skips the trigger — only once
 you trust the scene).
@@ -321,9 +336,10 @@ tight reachability corners may incur small tilts. (Note: this *levels* the pose,
 not merely hold the incoming one — a wrist that solved to e.g. 30° up is flattened to 0°.)
 
 ```bash
-docker compose run --rm --service-ports rx150-hardware \
-  ros2 launch bcr_arm_rx150 rx150_pick_place.launch.py carry_level:=true \
-    use_sweep_stub:=true use_vision_stub:=true
+docker compose run --rm --service-ports rx150-hardware bash -lc \
+  "source /workspaces/bcr_arm/install/setup.bash && \
+   ros2 launch bcr_arm_rx150 rx150_pick_place.launch.py carry_level:=true \
+     use_sweep_stub:=true use_vision_stub:=true"
 ```
 
 > **Two caveats:**

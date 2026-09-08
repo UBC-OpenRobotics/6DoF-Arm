@@ -8,41 +8,72 @@
 
   Both bolt their camera link onto rx150/gripper_link with this pose, and both
   mean the same physical point - the camera's own reference origin, which for a
-  D435 sits a few cm inside the casing. Measure to that point, not to the
-  casing, or fold the casing offset in here.
+  D435 sits a few mm inside the casing behind the front glass.
 
-  xyz is MEASURED. rpy is NOT; see the warning at the bottom.
+  xyz is MEASURED and DERIVED here, never pasted in. rpy is NOT measured; see
+  the warning at the bottom.
 
   ===========================================================================
   Where xyz comes from
   ===========================================================================
-  Measured by hand from the green dot (mount_ref_corner in
-  rx150_gripper_depth_camera.urdf.xacro) to the DEPTH camera origin, which is
-  the point camera_link names and the point this file must land on.
+  A datum on the robot, plus three tape measurements from that datum to the
+  camera. Both live below as properties and cam_mount_xyz is computed from
+  them, so there is no hand-summed number to fall out of step.
 
-  The raw measurement was taken in a different frame from gripper_link, so it
-  is transformed here rather than copied. Do not paste new numbers in without
-  redoing this: the axes do not line up, and nothing errors if they are wrong.
+  THE DATUM is mount_ref_corner - the top front corner of the LEFT face of the
+  square wrist servo housing, the corner closest to the left finger. Read off
+  the mesh, not estimated: the left face is the plane y = 0.01425 (half the
+  28.5 mm housing width) and spans x 0.000 to 0.0430, so the corner is
+  [0.04300, 0.01425, 0.03525] in gripper_link. The sim description draws a
+  green sphere there (show_mount_ref, on by default) so it can be eyeballed in
+  Gazebo and RViz before any number here is trusted.
 
-    measured frame                      gripper_link (REP-103)
-      x = across the gripper,             y = LEFT     (negated)
-          +x toward the RIGHT
-      y = height, +y up                   z = up       (as is)
-      z = out along the view              x = forward  (as is)
+  An earlier datum was a screw hole guessed 6 mm back and 6 mm down from this
+  corner, because the sim mesh has no screw holes. A corner is an edge a tape
+  can be held against and a hole was not, which is why it moved.
 
-    raw (mm)             x -1.930    y +26.525   z +37.660
-    in gripper_link axes x +37.660   y +1.930    z +26.525
-    green dot (m)        [0.03700, 0.01425, 0.02925]
-    dot + offset         [0.07466, 0.01618, 0.05577]
+  THE MEASUREMENTS are named for the physical direction they were taken in,
+  not x/y/z. This matters: a previous round handed over three bare magnitudes
+  labelled "x, y, z" without recording which physical axis each one named, and
+  four different readings of the same three numbers were all defensible. Never
+  record this measurement as x/y/z again.
 
-  The dot is itself estimated to a few mm (the sim mesh has no screw holes), so
-  treat the last digit as decoration, not precision.
+  They were taken FROM the depth camera LENS FACE TO the corner, and are
+  negated below into the corner-to-camera offsets the joint needs. The lens
+  face is not the depth origin, so cam_lens_to_depth_origin backs the depth
+  measurement off to it; do not apply that correction a second time anywhere.
+
+    lateral   24.55 mm, corner is LEFT of the lens, so the camera sits that
+              far toward the RIGHT finger of the corner. This is what puts the
+              camera slightly right of the gripper centreline - the D435's
+              left imager is off-centre in its casing.
+    depth      3.26 mm, corner is BEHIND the lens, so the camera sits that far
+              FORWARD of the corner. Note this is SMALLER than the lens-to-
+              depth-origin backoff below, so the depth origin ends up just
+              BEHIND the corner (cam_off_x is negative, about -0.9 mm).
+    height    18.76 mm, corner is BELOW the lens, so the camera sits that far
+              ABOVE the corner.
+
+  These replace a first set taken before the bracket was re-squared. That set
+  read 25.44 / 14.49 / 18.89 in the same three directions; with it the arm
+  landed about 22 mm to the RIGHT of the cup, which at the 0.44-0.57 m
+  detection range works out to 2-3 deg of camera YAW. The bracket was adjusted
+  to remove that yaw, which moved the camera and forced this re-measurement.
+  The directions did not change, only the magnitudes.
+
+  To re-measure, replace only the three magnitudes below, after checking each
+  direction word still describes what the tape did.
 
   ===========================================================================
   rpy IS STILL UNMEASURED
   ===========================================================================
-  0 0 0 asserts the camera is mounted perfectly square to the gripper. Nobody
-  has checked that. It is the term that matters most for the obstacle map: a
+  YAW has now been dealt with in HARDWARE, not here: the bracket was physically
+  re-squared after a 22 mm lateral miss showed 2-3 deg of yaw, which is why the
+  measurements above are a second set. So 0 for yaw is now a deliberate zero.
+
+  ROLL and PITCH are still unchecked, and 0 0 0 asserts the camera is mounted
+  perfectly square to the gripper in those axes too. It is the term that
+  matters most for the obstacle map: a
   rotation error does not shift the map, it SMEARS it, because each sweep
   station views the scene from a different angle and lands the same surface in
   a different place. 3 deg of pitch is about 26 mm of height error at 0.5 m,
@@ -52,6 +83,34 @@
   If the map still comes out thick with a correct xyz, measure this next.
 -->
 <robot xmlns:xacro="http://www.ros.org/wiki/xacro">
-  <xacro:property name="cam_mount_xyz" value="0.07466 0.01618 0.05577" scope="global"/>
-  <xacro:property name="cam_mount_rpy" value="0 0 0"         scope="global"/>
+
+  <!-- The datum. Mesh geometry, not a measurement. -->
+  <xacro:property name="mount_ref_x" value="0.04300" scope="global"/>
+  <xacro:property name="mount_ref_y" value="0.01425" scope="global"/>
+  <xacro:property name="mount_ref_z" value="0.03525" scope="global"/>
+  <xacro:property name="mount_ref_xyz"
+                  value="${mount_ref_x} ${mount_ref_y} ${mount_ref_z}"
+                  scope="global"/>
+
+  <!-- Tape, lens face to corner. Magnitudes only; the direction words are in
+       the header and decide the signs below. -->
+  <xacro:property name="cam_meas_lateral" value="0.02455"/>
+  <xacro:property name="cam_meas_depth"   value="0.00326"/>
+  <xacro:property name="cam_meas_height"  value="0.01876"/>
+
+  <!-- D435 depth start point, 4.2 mm behind the front cover glass. -->
+  <xacro:property name="cam_lens_to_depth_origin" value="0.0042"/>
+
+  <!-- Corner to camera. Negated, because the tape ran the other way. -->
+  <xacro:property name="cam_off_x" value="${ cam_meas_depth - cam_lens_to_depth_origin}"/>
+  <xacro:property name="cam_off_y" value="${-cam_meas_lateral}"/>
+  <xacro:property name="cam_off_z" value="${ cam_meas_height}"/>
+
+  <!-- Rounded because binary floating point turns 0.03525 + 0.01889 into
+       0.054139999999999994, which is the same number and much worse to read in
+       a rendered URDF or a TF dump. -->
+  <xacro:property name="cam_mount_xyz"
+                  value="${round(mount_ref_x + cam_off_x, 6)} ${round(mount_ref_y + cam_off_y, 6)} ${round(mount_ref_z + cam_off_z, 6)}"
+                  scope="global"/>
+  <xacro:property name="cam_mount_rpy" value="0 0 0" scope="global"/>
 </robot>

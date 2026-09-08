@@ -29,9 +29,10 @@ Args:
    scene_sweep_mapper in triggered mode. There is no canned-cloud option here;
    phase 1 scans for real and waits for sweep:complete before planning.)
   scan_waist_angles  ([]) waist angles in RADIANS the sweep stops at, in order.
-                   Empty keeps the node default: 8 stations round the full
-                   circle. Pass a shorter list to scan only the sector the scene
-                   occupies -- a 90 deg front sector is '[-0.785,0.0,0.785]'.
+                   Empty keeps the node default: a 90 deg front sector in 3
+                   stations, '[-0.785,0.0,0.785]'. Pass a list to scan somewhere
+                   else; the full circle is 8 stations,
+                   '[-3.10,-2.356,-1.571,-0.785,0.0,0.785,1.571,2.356]'.
                    Keep stations <=45 deg apart or the camera's 54.5 deg FOV
                    leaves a blind wedge. ONLY THE SWEPT SECTOR IS MAPPED; the
                    planner reads the rest as empty space.
@@ -136,13 +137,14 @@ def generate_launch_description():
         DeclareLaunchArgument(
             'scan_waist_angles', default_value='[]',
             description='Waist angles (radians) the sweep stops at, in order. '
-                        'Empty keeps the node default: 8 stations round the full '
-                        'circle. Pass a shorter list to scan only the sector the '
-                        'scene occupies -- a 90 deg front sector is '
-                        "'[-0.785, 0.0, 0.785]'. Stations must be no more than "
-                        "~45 deg apart or the D435i's 54.5 deg FOV leaves a blind "
-                        'wedge between them. ONLY THE SWEPT SECTOR IS MAPPED; the '
-                        'planner reads everything else as empty space.',
+                        'Empty keeps the node default: a 90 deg front sector in '
+                        "3 stations, '[-0.785, 0.0, 0.785]'. Pass a list to scan "
+                        'somewhere else; the full circle is 8 stations, '
+                        '\'[-3.10,-2.356,-1.571,-0.785,0.0,0.785,1.571,2.356]\'. Stations '
+                        "must be no more than ~45 deg apart or the D435i's "
+                        '54.5 deg FOV leaves a blind wedge between them. ONLY '
+                        'THE SWEPT SECTOR IS MAPPED; the planner reads '
+                        'everything else as empty space.',
         ),
         DeclareLaunchArgument(
             'grasp_clearance_radius', default_value='0.08',

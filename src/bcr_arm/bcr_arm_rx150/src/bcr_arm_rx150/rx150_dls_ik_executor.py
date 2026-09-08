@@ -79,6 +79,14 @@ class Rx150DlsIkExecutor(Node):
         self.declare_parameter('carry_level_topic', '/motion/carry_level')
         self.declare_parameter('max_carry_tilt_deg', 10.0)
         self.declare_parameter('status_topic', '/motion/status')
+        # Report terminal motion events the orchestrator can wait on.
+        # OFF by default: normally the path/joint waypoint executors own
+        # that channel, and a second publisher of 'path:complete' would
+        # advance the mission twice per move. Turn it on ONLY when this
+        # node is driven directly, with the planner out of the loop.
+        #
+        # Events are emitted for POINT targets only -- see _drives_mission.
+        self.declare_parameter('emit_motion_status', False)
         self.declare_parameter('cancel_topic', '/motion/cancel')
 
         self._world_frame = self.get_parameter('world_frame').value
@@ -238,6 +246,14 @@ class Rx150DlsIkExecutor(Node):
         self._status_pub = self.create_publisher(
             String, str(self.get_parameter('status_topic').value), 10
         )
+        self._emit_motion_status = bool(
+            self.get_parameter('emit_motion_status').value
+        )
+        # One-shot timer that reports arrival. This node commands a trajectory
+        # and does not track execution, so "arrived" is the goal time elapsing
+        # rather than a measured pose -- the same assumption the trajectory
+        # itself is built on.
+        self._completion_timer = None
 
         self._oneshot = oneshot_point is not None or oneshot_pose is not None
         if not self._oneshot:
@@ -407,6 +423,7 @@ class Rx150DlsIkExecutor(Node):
         self._pending_solve = False
         if solution is None:
             self.get_logger().warning('IK solve did not converge for the requested target.')
+            self._emit_motion('path:aborted')
             if self._oneshot:
                 rclpy.shutdown()
             return
@@ -428,6 +445,7 @@ class Rx150DlsIkExecutor(Node):
             )
             self._publish_trajectory(self._neutral_carry_joint_positions, self._goal_time_sec)
             if not self._retry_after_neutral_pending:
+                self._emit_motion('path:aborted')
                 self._clear_target()
             return
 
@@ -457,6 +475,7 @@ class Rx150DlsIkExecutor(Node):
             'orientation error: %.4f rad'
             % (position_error_norm, orientation_error_norm)
         )
+        self._schedule_completion()
 
     def _carry_level_callback(self, msg: Bool) -> None:
         requested = bool(msg.data)
@@ -542,6 +561,20 @@ class Rx150DlsIkExecutor(Node):
     def _point_target_rotation_from_policy(
         self, current_rotation: Optional[np.ndarray] = None
     ) -> Optional[np.ndarray]:
+        if self._carry_level_active:
+            # Level means level in the WORLD, so hand the solver a world-frame
+            # reference. In upright_free_yaw the solver aims for
+            #     target_axis_world = target_rotation @ tool_axis
+            # so returning the CURRENT rotation here (as the policies below do)
+            # makes the goal "point the gripper's up-axis where it already
+            # points" -- the orientation error is zero by construction and the
+            # level guard preserves whatever tilt the arm arrived with instead
+            # of removing it. Coming out of the sweep that tilt is the scan
+            # posture's downward pitch, so the gripper grabs from above.
+            #
+            # Identity makes the goal world up. Yaw stays free -- only the axis
+            # is constrained, never the rotation about it.
+            return np.eye(3)
         if self._point_target_orientation_policy == 'none':
             return None
         if self._point_target_orientation_policy == 'neutral':
@@ -590,7 +623,52 @@ class Rx150DlsIkExecutor(Node):
         self.get_logger().warning('Cancel received: dropping the active IK target.')
         self._clear_target()
 
+    def _drives_mission(self) -> bool:
+        """Whether the active target is one the mission is waiting on.
+
+        /motion/status is a SHARED channel and this node has two producers of
+        work on it. The orchestrator sends PointStamped; scene_sweep_mapper
+        sends PoseStamped for every station of the scan. Reporting on both
+        breaks the sweep outright: the orchestrator is blocked in
+        _wait_for_sweep, which accepts the next terminal token as the sweep's
+        own outcome, so a station move reporting path:complete aborts the
+        mission with "sweep did not complete" partway through the scan.
+
+        So the kind of target decides. Point targets are the mission's moves
+        and get reported; pose targets belong to the sweep and stay silent,
+        exactly as before this node reported anything at all.
+        """
+        return self._emit_motion_status and self._target_kind == 'point'
+
+    def _emit_motion(self, token: str) -> None:
+        """Publish a terminal motion event, when this node is the one driving."""
+        if self._drives_mission():
+            self._status_pub.publish(String(data=token))
+
+    def _cancel_completion_timer(self) -> None:
+        if self._completion_timer is not None:
+            self._completion_timer.cancel()
+            self.destroy_timer(self._completion_timer)
+            self._completion_timer = None
+
+    def _schedule_completion(self) -> None:
+        """Report path:complete once the commanded trajectory should have run.
+
+        Reuses the waypoint executors' token so the orchestrator needs no new
+        state: to it this is just another Cartesian move that finished.
+        """
+        if not self._drives_mission():
+            return
+        self._cancel_completion_timer()
+
+        def _fire():
+            self._cancel_completion_timer()
+            self._status_pub.publish(String(data='path:complete'))
+
+        self._completion_timer = self.create_timer(self._goal_time_sec, _fire)
+
     def _clear_target(self) -> None:
+        self._cancel_completion_timer()
         self._target_position = None
         self._target_rotation = None
         self._target_kind = None

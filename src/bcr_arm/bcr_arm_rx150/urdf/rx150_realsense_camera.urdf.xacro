@@ -15,13 +15,14 @@
   (scene_point_cloud, so no obstacle map) and localization_3d_node (so vision
   publishes nothing and the mission aborts at the vision phase).
 
-  ##########################################################################
-  THE NUMBERS BELOW ARE PLACEHOLDERS. MEASURE THEM ON THE REAL ARM.
-  ##########################################################################
-  They are copied from the sim camera's invented offset and are almost
-  certainly wrong for your bracket. See TASK_camera_extrinsics_urdf.md. Until
-  they are measured, the point cloud will land in the wrong place relative to
-  the arm: consistently and confidently, which is the hard kind of wrong.
+  The mounting pose is no longer a placeholder. It is derived in
+  camera_mount_pose.xacro from a datum on the wrist housing plus three tape
+  measurements from that datum to the camera; that file carries the numbers,
+  the directions they were taken in, and what is still unmeasured (rpy).
+
+  It has NOT been confirmed against a real scene yet, so check it before
+  trusting the map. A wrong extrinsic puts the cloud in the wrong place
+  consistently and confidently, which is the hard kind of wrong.
 
   How to check: put a known object in front of the arm, look at
   /planning/live_point_cloud in RViz with the robot model shown, and confirm
@@ -56,7 +57,7 @@
 <robot xmlns:xacro="http://www.ros.org/wiki/xacro">
 
   <!-- Mounting pose, shared with the sim description so the two cannot drift
-       apart. PLACEHOLDER, measure it. -->
+       apart. Derived there from the wrist-housing datum. -->
   <xacro:include filename="$(find bcr_arm_rx150)/urdf/camera_mount_pose.xacro"/>
 
   <joint name="$(arg robot_name)_camera_mount" type="fixed">

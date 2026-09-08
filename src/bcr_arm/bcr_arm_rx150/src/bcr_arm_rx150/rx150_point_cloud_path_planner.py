@@ -294,6 +294,53 @@ class Rx150PointCloudPathPlanner(Node):
         )
         self._emit('planner:no_path')
 
+    @staticmethod
+    def _explain_rrt_failure(stats: dict) -> str:
+        """Say which stage actually refused, not which one is easiest to blame.
+
+        `no_goal_config` used to be reported as "target unreachable", which is
+        only one of its causes and usually not the one that fires. IK reaching
+        the point fine and every branch then landing inside the map is a
+        different problem with a different fix, and the two are worth telling
+        apart before anyone re-tunes the planner.
+        """
+        if stats.get('start_in_collision'):
+            return 'The arm is already touching the map at its current pose.'
+        if stats.get('result') != 'no_goal_config':
+            return 'Target is likely unreachable for the whole arm.'
+
+        report = stats.get('goal_report') or {}
+        blocked = int(report.get('in_collision', 0))
+        unreachable = int(report.get('ik_unconverged', 0)) + int(
+            report.get('ik_failed', 0)
+        )
+        limited = int(report.get('out_of_limits', 0))
+        detail = (
+            'No goal configuration survived: %d IK branch(es) reached the point '
+            'but sit inside the map, %d did not converge, %d hit a joint limit '
+            '(best position error %.3f m).'
+            % (
+                blocked,
+                unreachable,
+                limited,
+                float(report.get('best_position_error', float('nan'))),
+            )
+        )
+        if blocked and blocked >= unreachable:
+            segments = [
+                rx150_rrt_fallback.LINK_SEGMENT_NAMES[i]
+                for i in report.get('collision_segments', [])
+                if 0 <= i < len(rx150_rrt_fallback.LINK_SEGMENT_NAMES)
+            ]
+            detail += (
+                ' The arm CAN reach the target; the map says the space around it '
+                'is occupied. Blocking link(s): %s. Look at whether those points '
+                'are the target object itself (raise grasp_clearance_radius) or '
+                'a mis-registered map (check the camera extrinsics).'
+                % (', '.join(sorted(set(segments))) or 'unknown')
+            )
+        return detail
+
     def _try_rrt_fallback(
         self,
         start_xyz: np.ndarray,
@@ -331,9 +378,7 @@ class Rx150PointCloudPathPlanner(Node):
                     float(stats.get('elapsed_sec', 0.0)),
                     bool(stats.get('start_in_collision', False)),
                     0 if obstacle_points is None else len(obstacle_points),
-                    'The arm is already touching the map at its current pose.'
-                    if stats.get('start_in_collision')
-                    else 'Target is likely unreachable for the whole arm.',
+                    self._explain_rrt_failure(stats),
                 )
             )
             return False

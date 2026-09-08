@@ -48,7 +48,7 @@ handled for you.
 | `phase_delay_sec:=0.0` | `2.0` | drop the debugging pause between phases (~20 s/cycle) |
 | `cup_classes:='[cup]'` | `[cup, frisbee, bowl, toilet]` | narrow the accepted labels — **priority order, see §7** |
 | `observe_joints:='[0.0,-1.65,1.07,1.25,0.0]'` | off (`[]`) | add a fixed look-down pose; rarely needed — the sweep finds the cup |
-| `scan_waist_angles:='[-0.785,0.0,0.785]'` | full circle (`[]`) | sweep only a 90 deg front sector (±45°) instead of all 8 stations — faster, but the planner reads the unswept rest as empty |
+| `scan_waist_angles:='[-3.10,-2.356,-1.571,-0.785,0.0,0.785,1.571,2.356]'` | 90° front sector (`[]`) | sweep the full circle in 8 stations instead of the default 3 — slower, but nothing outside ±45° is mapped otherwise |
 
 **Terminal 2 — keyboard control:**
 
@@ -80,7 +80,7 @@ Healthy camera rates are ~5 Hz on `/gripper_camera/points` and ~4 Hz on
 
 Same shape as sim. The arm must be powered and connected first.
 
-⚠️ **The sweep physically moves the arm** through eight scan poses. Clear the workspace.
+⚠️ **The sweep physically moves the arm** through three scan poses across the 90° front sector — more if you widen `scan_waist_angles`. Clear the workspace.
 
 ```bash
 # Terminal 1
@@ -104,7 +104,7 @@ Every flag from §1 applies. Three more matter on the first hardware run:
 | `goal_fallback_xyz:='[x, y, z]'` | `[0.20, 0.22, 0.06]` | **set this every time** — the drop-off point is a fixed guess, not something the camera found |
 | `min_depth_m:=0.2` | `0.2` | already raised for a D435 (cannot focus closer). Lower it for a D405 |
 | `cup_classes:='[cup]'` | `[cup]` | change if the detector labels your cup something else (`ros2 topic echo /perception/detections`) |
-| `scan_waist_angles:='[-0.785,0.0,0.785]'` | full circle (`[]`) | sweep only a 90 deg front sector (±45°) instead of all 8 stations — faster, but the planner reads the unswept rest as empty |
+| `scan_waist_angles:='[-3.10,-2.356,-1.571,-0.785,0.0,0.785,1.571,2.356]'` | 90° front sector (`[]`) | sweep the full circle in 8 stations instead of the default 3 — slower, but nothing outside ±45° is mapped otherwise |
 
 Both stubs default off, so this runs the real pipeline. To exercise mission logic with
 no camera and no physical scan:
@@ -230,7 +230,7 @@ ros2 launch bcr_arm_rx150 rx150_pick_place_sim.launch.py \
 | `yolo_confidence` | `0.15` | `0.5` | low in sim on purpose; see §7 |
 | `goal_fallback_xyz` | `[0.20, 0.18, 0.16]` | `[0.20, 0.22, 0.06]` | **placeholder** drop-off — the detector has no goal class |
 | `min_depth_m` | `0.2` | `0.2` | depths below this are invalid; a D435 cannot focus closer |
-| `scan_waist_angles` | `[]` | `[]` | waist stations (radians) the sweep stops at; `[]` = 8 round the full circle. `'[-0.785,0.0,0.785]'` scans a 90 deg front sector |
+| `scan_waist_angles` | `[]` | `[]` | waist stations (radians) the sweep stops at; `[]` = the 90 deg front sector `[-0.785, 0.0, 0.785]`. Pass `'[-3.10,-2.356,-1.571,-0.785,0.0,0.785,1.571,2.356]'` for the full circle |
 | `detection_ttl_sec` | `300.0` | `300.0` | a sighting older than this is not an answer — **must exceed one sweep** |
 | `approach_height` | `0.15` | `0.15` | hover this far above a grasp point — **hard geometric floor, see below** |
 | `approach_back_off` | `0.045` | `0.045` | how far *behind* the object the hover sits, so the gripper descends diagonally |
@@ -315,7 +315,7 @@ normal running**), `grasp_clearance_radius` on the planner (0.08).
   `sweep_placeholder` is still there behind `use_sweep_stub:=true`: it answers
   instantly with a canned box at `[0.34, 0.14, 0.12]` and **no arm motion**, which is
   the right choice when you want to exercise mission logic without driving the arm
-  through eight scan poses. It emits the same `sweep:complete`, so phase 1 is
+  through a real scan. It emits the same `sweep:complete`, so phase 1 is
   identical either way — the map is just fake.
 
   > **Never run a second sweep node by hand.** Two nodes publishing
@@ -500,7 +500,10 @@ entered from the same configuration. That keeps the DLS solver on one solution b
 for the whole scan — the same reason the initial fold is its own move — and avoids
 slewing the waist with the wrist parked near its stop.
 
-**The waist angles were left alone.** Against the corrected D435i horizontal FOV of
+**The waist angles were left alone** *at the time*. (The default has since narrowed to
+the 90° front sector `[-0.785, 0.0, 0.785]` — the rig only ever has scene in front of
+it. The analysis below still describes the full-circle list, which is now opt-in.)
+Against the corrected D435i horizontal FOV of
 54.5° (not the 62° the code used to assume) eight stations already give 100% azimuthal
 coverage with margin: a cup at R=0.30 stays inside the central **70%** of the frame at
 some station, everywhere on the circle. A ninth station only starts to matter if you

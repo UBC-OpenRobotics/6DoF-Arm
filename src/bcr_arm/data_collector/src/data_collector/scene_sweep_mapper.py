@@ -24,11 +24,25 @@ except ImportError:  # pragma: no cover - depends on the environment
     o3d = None
 
 
-# Waist angles for the sweep (radians), 45 deg apart from -177 deg to +135 deg,
-# leaving a 47 deg gap through the back where nothing is placed. Eight stations
-# cover the full circle against the D435i's 54.5 deg horizontal FOV; respacing
-# them evenly opens a hole rather than closing one.
-SCAN_WAIST_ANGLES = [-3.10, -2.356, -1.571, -0.785, 0.0, 0.785, 1.571, 2.356]
+# Default sweep: a 90 deg sector straight ahead, 45 deg apart. Against the
+# D435i's 54.5 deg horizontal FOV the three stations see -72 deg .. +72 deg, so
+# the +/-45 deg the workspace actually occupies is covered with margin. This is
+# the default because the rig only ever has scene in front of it, and three
+# stations take well under half the time eight do.
+#
+# Everything OUTSIDE the swept sector reads to the planner as empty space, not
+# as unknown -- it will happily route the arm through a wall it never looked at.
+# Widen this (or pass scan_waist_angles) before working to the side or behind.
+SCAN_WAIST_ANGLES = [-0.785, 0.0, 0.785]
+
+# The old default, kept as the ready-made "look everywhere" list: 45 deg apart
+# from -177 deg to +135 deg, leaving a 47 deg gap through the back where nothing
+# is placed. Eight stations cover the full circle at 54.5 deg FOV; respacing them
+# evenly opens a hole rather than closing one. Pass it explicitly:
+#   scan_waist_angles:='[-3.10,-2.356,-1.571,-0.785,0.0,0.785,1.571,2.356]'
+SCAN_WAIST_ANGLES_FULL_CIRCLE = [
+    -3.10, -2.356, -1.571, -0.785, 0.0, 0.785, 1.571, 2.356,
+]
 
 # waist travel limits from interbotix_xsarm_descriptions rx150.urdf.xacro
 # (-180 deg .. +180 deg). Stations are clamped to these, for the same reason the

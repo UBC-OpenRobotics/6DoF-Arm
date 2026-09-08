@@ -16,6 +16,7 @@ setup(
             'launch/rx150_gz_classic.launch.py',
             'launch/rx150_dls_stack.launch.py',
             'launch/rx150_moveit_interface.launch.py',
+            'launch/rx150_joint_sequence.launch.py',
             'launch/rx150_pick_place.launch.py',
             'launch/rx150_pick_place_sim.launch.py',
         ]),
@@ -28,7 +29,8 @@ setup(
             'worlds/rx150_obstacles.world',
         ]),
         ('share/' + package_name + '/rviz', [
-            'rviz/rx150_dls_sim_stack.rviz',
+            'rviz/rx150_dls_sim_stack.rviz',   # sim: fixed frame `world` (Gazebo)
+            'rviz/rx150_dls_stack.rviz',       # hardware: fixed frame rx150/base_link
         ]),
     ],
     install_requires=['setuptools'],
@@ -43,6 +45,7 @@ setup(
             'mission_keyboard = bcr_arm_rx150.mission_keyboard:main',
             'rx150_dls_ik_executor = bcr_arm_rx150.rx150_dls_ik_executor:main',
             'rx150_gripper_controller = bcr_arm_rx150.rx150_gripper_controller:main',
+            'rx150_joint_sequence = bcr_arm_rx150.rx150_joint_sequence:main',
             'rx150_joint_waypoint_executor = bcr_arm_rx150.rx150_joint_waypoint_executor:main',
             'rx150_named_pose = bcr_arm_rx150.rx150_named_pose:main',
             'rx150_path_waypoint_executor = bcr_arm_rx150.rx150_path_waypoint_executor:main',

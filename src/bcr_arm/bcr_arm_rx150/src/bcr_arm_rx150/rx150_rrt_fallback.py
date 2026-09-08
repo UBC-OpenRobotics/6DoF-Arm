@@ -19,7 +19,7 @@ execution never disagree about the reachable range.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Callable, List, Optional
+from typing import Callable, List, Optional, Tuple
 
 import numpy as np
 
@@ -53,7 +53,29 @@ def make_collision_fn(
         )
         return collided
 
+    # Carried so a caller can re-run the check and name the link that blocked,
+    # without threading the points and margin through every signature.
+    collision_fn.obstacle_points = points        # type: ignore[attr-defined]
+    collision_fn.extra_margin = extra_margin     # type: ignore[attr-defined]
     return collision_fn
+
+
+LINK_SEGMENT_NAMES = (
+    'base/waist', 'upper arm', 'forearm', 'wrist', 'gripper',
+)
+
+
+def _colliding_segment(collision_fn: CollisionFn, q: np.ndarray) -> int:
+    """Which link segment blocked ``q``, or -1 if the check cannot say."""
+    points = getattr(collision_fn, 'obstacle_points', None)
+    if points is None:
+        return -1
+    _, segment_index = rx150_kinematics.check_arm_collision(
+        rx150_kinematics.link_positions(q),
+        points,
+        extra_margin=getattr(collision_fn, 'extra_margin', 0.0),
+    )
+    return int(segment_index)
 
 
 def _seed_configs(q_start: np.ndarray, target_position: np.ndarray) -> List[np.ndarray]:
@@ -98,29 +120,73 @@ def generate_goal_configs(
     own per-waypoint solve -- for routing feasibility we care that the tool tip
     reaches the point, not its final orientation.
     """
+    goals, _ = generate_goal_configs_with_report(
+        solver, q_start, target_position, collision_fn, target_rotation, dedupe_tol
+    )
+    return goals
+
+
+def generate_goal_configs_with_report(
+    solver: DlsSolver,
+    q_start: np.ndarray,
+    target_position: np.ndarray,
+    collision_fn: CollisionFn,
+    target_rotation: Optional[np.ndarray] = None,
+    dedupe_tol: float = 0.05,
+) -> Tuple[List[np.ndarray], dict]:
+    """As :func:`generate_goal_configs`, plus why the rejected seeds were rejected.
+
+    Zero goals has several very different causes and they call for opposite
+    fixes -- an out-of-reach target needs the target moved, a target buried in
+    the map needs the map or the grasp clearance looked at. Counting them
+    separately is the only way the log can tell them apart.
+    """
     q_start = np.asarray(q_start, dtype=float)
     target_position = np.asarray(target_position, dtype=float)
     lower = solver.config.joint_limits_lower
     upper = solver.config.joint_limits_upper
 
     goals: List[np.ndarray] = []
+    report = {
+        'seeds': 0,
+        'ik_failed': 0,
+        'ik_unconverged': 0,
+        'out_of_limits': 0,
+        'in_collision': 0,
+        'duplicate': 0,
+        'best_position_error': float('inf'),
+        'collision_segments': [],
+    }
+
     for seed in _seed_configs(q_start, target_position):
+        report['seeds'] += 1
         seed = np.clip(seed, lower, upper)
         result = solver.solve(seed, target_position, target_rotation)
         if result is None:
+            report['ik_failed'] += 1
             continue
-        q_solution, _, _, converged = result
+        q_solution, position_error, _, converged = result
+        report['best_position_error'] = min(
+            report['best_position_error'], float(position_error)
+        )
         if not converged:
+            report['ik_unconverged'] += 1
             continue
         if np.any(q_solution < lower) or np.any(q_solution > upper):
+            report['out_of_limits'] += 1
             continue
         if collision_fn(q_solution):
+            report['in_collision'] += 1
+            report['collision_segments'].append(
+                _colliding_segment(collision_fn, q_solution)
+            )
             continue
         if any(np.linalg.norm(q_solution - existing) < dedupe_tol for existing in goals):
+            report['duplicate'] += 1
             continue
         goals.append(q_solution)
 
-    return goals
+    return goals, report
 
 
 @dataclass
@@ -152,11 +218,15 @@ def plan_joint_path(
 ) -> RrtFallbackResult:
     """Full fallback: goal IK branches -> RRT-Connect -> joint path (or None)."""
     collision_fn = make_collision_fn(obstacle_points, extra_margin=extra_margin)
-    goals = generate_goal_configs(
+    goals, goal_report = generate_goal_configs_with_report(
         solver, q_start, target_position, collision_fn, target_rotation
     )
     if not goals:
-        return RrtFallbackResult(path=None, goal_count=0, stats={'result': 'no_goal_config'})
+        return RrtFallbackResult(
+            path=None,
+            goal_count=0,
+            stats={'result': 'no_goal_config', 'goal_report': goal_report},
+        )
 
     planner = RrtConnectPlanner(
         solver.config.joint_limits_lower,

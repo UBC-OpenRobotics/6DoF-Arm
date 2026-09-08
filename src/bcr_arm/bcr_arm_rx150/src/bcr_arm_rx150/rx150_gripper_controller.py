@@ -68,7 +68,44 @@ _SIM_FINGER_OPEN = 0.037
 #Physical gripper servo angle (radians). Placeholders for the gripper motor in
 # `position` operating mode -- verify/tune on the real arm before trusting them.
 _HW_SERVO_CLOSED = 0.6
-_HW_SERVO_OPEN = 1.5
+_HW_SERVO_OPEN = 1.7
+
+# Physical gripper PWM effort, for the motor in `pwm` operating mode -- which is
+# what interbotix_xsarm_control/config/modes.yaml actually sets:
+#
+#   singles:
+#     gripper:
+#       operating_mode: pwm
+#
+# In that mode JointSingleCommand.cmd is a PWM effort (roughly +/-885), NOT a
+# joint angle. Sending the radian values above puts ~0.6 of 885 on the motor,
+# which is indistinguishable from no command: the gripper never moves and
+# nothing errors. Sign is direction; magnitude is how hard it squeezes, so the
+# grip force self-limits instead of the servo fighting to a setpoint and
+# stalling on the object. That is why Interbotix ships the gripper this way.
+#
+# OPEN and CLOSE are deliberately asymmetric, because they are doing different
+# jobs.
+#
+# CLOSING squeezes an object. Effort is grip force, and it must be HELD for as
+# long as the object is carried. ~1/3 of full scale holds a light object
+# without straining the motor. Raise it if the cup slips, but watch the servo
+# temperature.
+#
+# OPENING has nothing to squeeze -- it has to drive the fingers the whole way
+# to their mechanical stop, against stiction. In PWM mode the fingers stop
+# wherever the applied effort balances friction, NOT at the stop, so too small
+# a value leaves the gripper part-open with no error anywhere. Opening
+# therefore uses the larger magnitude even though it is the gentler operation.
+# It is held indefinitely once commanded -- dropping it to zero (or easing it)
+# lets the fingers sag back off the stop, since a light pwm command leaves the
+# gripper closer to limp than held.
+#
+# SIGN: POSITIVE pwm OPENS this gripper, confirmed on the arm. Read left_finger
+# in /rx150/joint_states WHILE a command is applied to re-check either value --
+# not after, since a following command (or the effort easing) changes it back.
+_HW_PWM_CLOSED = -300.0
+_HW_PWM_OPEN = 800.0
 
 _SENTINEL = float('nan')
 
@@ -85,6 +122,12 @@ class Rx150GripperController(Node):
         self.declare_parameter('single_joint_name', 'gripper')
         self.declare_parameter('command_time_sec', 1.0)
         self.declare_parameter('command_units', 'native')
+        # What the servo reads JointSingleCommand.cmd AS -- 'position' (joint
+        # angle) or 'pwm' (effort). It must match the gripper's operating_mode
+        # in the mode config xs_sdk loaded, or commands are silently ignored.
+        # Separate from command_units, which scales the INPUT: 'normalized'
+        # plus 'pwm' means 0.0..1.0 maps across the PWM range.
+        self.declare_parameter('single_command_kind', 'position')
         # Sentinel defaults -> filled in per-mode below.
         self.declare_parameter('open_position', _SENTINEL)
         self.declare_parameter('closed_position', _SENTINEL)
@@ -102,9 +145,23 @@ class Rx150GripperController(Node):
         self._command_mode = mode
 
         # Mode-appropriate defaults when the user left params at the sentinel.
+        command_kind = str(
+            self.get_parameter('single_command_kind').value
+        ).strip().lower()
+        if command_kind not in {'position', 'pwm'}:
+            self.get_logger().warning(
+                "Unknown single_command_kind '%s'. Falling back to 'position'."
+                % command_kind
+            )
+            command_kind = 'position'
+        self._single_command_kind = command_kind
+
         if mode == 'trajectory':
             default_open, default_closed = _SIM_FINGER_OPEN, _SIM_FINGER_CLOSED
             default_topic = '/rx150/gripper_controller/joint_trajectory'
+        elif command_kind == 'pwm':
+            default_open, default_closed = _HW_PWM_OPEN, _HW_PWM_CLOSED
+            default_topic = '/rx150/commands/joint_single'
         else:
             default_open, default_closed = _HW_SERVO_OPEN, _HW_SERVO_CLOSED
             default_topic = '/rx150/commands/joint_single'
