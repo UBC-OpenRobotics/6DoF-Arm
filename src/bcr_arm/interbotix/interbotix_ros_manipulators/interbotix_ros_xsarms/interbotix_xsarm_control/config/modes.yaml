@@ -8,5 +8,8 @@ groups:
 
 singles:
   gripper:
-    operating_mode: pwm
+    operating_mode: position
+    profile_type: time
+    profile_velocity: 2000
+    profile_acceleration: 300
     torque_enable: true

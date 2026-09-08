@@ -51,6 +51,35 @@ from bcr_arm_rx150.rx150_dls_solver import DlsSolverConfig
 # arm the way the cup poses were, rather than taking it from the config file.
 SLEEP = [0.0, -1.80, 1.55, 0.8, 0.0]
 
+# Grasp target, in native servo radians (see command_units in the launch
+# file -- this is an absolute angle, not a fraction of open/closed).
+#
+# 'close' targets closed_position (-0.8), which is unreachable once the cup
+# is actually between the fingers -- the servo then fights that gap at
+# ~max effort for as long as it's holding, which is what was tripping the
+# gripper's Hardware Error Status partway through a carry (see
+# rx150_gripper_controller.py's _clear_startup_fault). Measured live while
+# the gripper was stalled holding the cup: it settles at ~-0.059 rad no
+# matter how much further 'close' asks it to go, because that's where the
+# cup physically stops the fingers, not a target the servo is converging on.
+#
+# GRASP asks for only a small, deliberate amount past that measured contact
+# point -- enough for a firm press-fit, but close enough to reachable that
+# the position error (and therefore the continuous holding effort) stays
+# small instead of pegged at max the whole carry. If the cup slips, tighten
+# this (more negative); if the gripper still faults on a long carry, loosen
+# it back toward -0.06.
+#
+# -0.15 (margin ~0.09 past contact), then -0.09 (margin ~0.03), both still
+# faulted on a long carry -- turns out duration matters as much as margin
+# here (this motor has no current sensing; a blocked hold seems to trip its
+# protection on sustained time, not proportionally on how far past contact
+# the target is). Set to the measured contact point itself: this should
+# minimize continuous holding effort to close to zero. Combine with cutting
+# the carry duration (see step_pause_sec overrides in SEQUENCE below) rather
+# than expecting this alone to fix it.
+GRASP = -0.06
+
 # The 'at cup' pose is a RE-RECORDING. The first one put the tool 0.14 m from
 # the base -- the folded rest posture with the waist turned, captured while the
 # arm was resting rather than reaching -- so the arm drove backwards to reach
@@ -64,11 +93,23 @@ SLEEP = [0.0, -1.80, 1.55, 0.8, 0.0]
 # arm under power to get rid of that.
 #
 # 'forward 30 mm' is the only pose here that was NOT recorded off the arm. It
-# is the 'at cup' tool pose moved 30 mm straight out from the base, level, with
-# the wrist orientation held: solved with the shared DLS solver, converged to
-# 0.1 mm and 0.0006 rad, every joint inside its limit. Only shoulder, elbow and
-# wrist_angle move; waist and wrist_rotate are untouched, so the approach
-# direction is unchanged.
+# started as the 'at cup' tool pose moved 30 mm straight out from the base,
+# then was re-solved 15 mm back IN toward the base (same waist/wrist_rotate,
+# same z, same wrist orientation) so it now sits ~15 mm out from 'at cup'
+# instead of 30 mm -- the label is stale but harmless (just a log string).
+# Solved with the shared DLS solver (step_scale=0.25, tightened tolerances to
+# converge properly instead of overshooting into the wrist_angle limit),
+# converged to 0.2 mm and 0.2 mrad, every joint inside its limit. Only
+# shoulder, elbow and wrist_angle move; waist and wrist_rotate are untouched,
+# so the approach direction is unchanged.
+#
+# 'pre-grasp' and 'at cup' were NOT moved the same way: solving them 15 mm
+# closer while holding their exact recorded orientation drives wrist_angle
+# straight into its -1.7453 rad (-100 deg) lower limit -- 'pre-grasp' only
+# has ~6 mm of room before that happens, and 'at cup' has none (it's already
+# 3.3 deg past that same limit, see above). Moving them the full 15 mm would
+# require tilting the wrist off the recorded orientation, which changes what
+# "don't change laterally or height" was asking to preserve.
 #
 # The gripper now closes HERE rather than at 'at cup', and the cup is set back
 # down here too -- releasing 30 mm short would drop it in the wrong place. The
@@ -76,24 +117,50 @@ SLEEP = [0.0, -1.80, 1.55, 0.8, 0.0]
 # the gripper withdraws from the cup instead of sweeping through it.
 #
 # Recorded poses, arm joints only, in the order they are visited.
-#   (label, [waist, shoulder, elbow, wrist_angle, wrist_rotate], gripper_after)
+#   (label, [waist, shoulder, elbow, wrist_angle, wrist_rotate], gripper_after,
+#    pause_sec)
 # gripper_after runs AFTER the arm reports arrival, so the fingers never move
-# while the arm is still travelling.
+# while the arm is still travelling. pause_sec is optional (omit the 4th
+# element to use the step_pause_sec default) -- it overrides the settling
+# pause after just that one step, for legs that don't need the full default
+# (e.g. a station visit that shouldn't linger) without changing it globally.
 SEQUENCE = [
     ('home (folded)',   SLEEP,                                                           'open'),
-    ('pre-grasp',       [0.5967185497283936, 0.7531846165657043, 0.9986215233802795,
-                         -1.7057867050170898, -0.11965050548315048],                     None),
-    ('at cup',          [0.6043884754180908, 0.7992039918899536, 1.0078253746032715,
-                         -1.8024275302886963, -0.02147573232650757],                     None),
-    ('forward 30 mm',   [0.6043884754, 0.7710721298, 0.8214471397,
-                         -1.5314454611, -0.0214757323],                                 'close'),
-    ('cup in air',      [0.5399612784385681, -0.1533980816602707, 0.552233099937439,
-                         -0.38196122646331787, -0.003067961661145091],                   None),
+    ('pre-grasp',       [-0.8206797242164612, -0.38196122646331787, 0.7838642001152039,
+                         -0.35588353872299194,  0.05522330850362778],                     None),
+    ('pre-grasp-2',       [-0.8421554565429688, 0.8022719621658325, 0.725572943687439,
+                         -1.480291485786438,  -0.0076699042692780495],                     None),
+
+
+    ('at cup',          [-0.8375535607337952, 1.0108933448791504, -0.029145635664463043,
+                         -1.036971092224121, -0.0782330259680748], GRASP),
+
+    ('home (folded)', SLEEP, GRASP),
+
+
+     ('at cup',
+              [-0.3880971372127533, 0.4770680367946625, 0.8866409063339233,
+                         -1.339165210723877, 0.11965050548315048],  GRASP, ),
+
+
+     ('got to fill station',
+            [-0.3988350033760071, 0.7915341258049011, -0.05675728991627693,
+                         -0.8007379770278931, 0.004601942375302315], GRASP,
+            0.8),  # 40% of the 2.0s default -- don't linger here mid-carry.
+
+         ('carrying filled cup back from canister',  [-0.38196122646331787, 0.5660389065742493, 1.0293011665344238,
+                         -1.5984079837799072, -0.012271846644580364], GRASP, ),
+
+
+
+
+   ('carrying filled cup  to intermediary', [-0.4141748249530792, 0.3681553900241852, 1.2732040882110596,
+                         -1.5661944150924683, -0.004601942375302315], GRASP),
+
+
     ('cup back down',   [0.6043884754, 0.7710721298, 0.8214471397,
                          -1.5314454611, -0.0214757323],                                 'open'),
-    ('back off 30 mm',  [0.6043884754180908, 0.7992039918899536, 1.0078253746032715,
-                         -1.8024275302886963, -0.02147573232650757],                     None),
-    ('home (folded)',   SLEEP,                                                           None),
+    ('home (folded)',   SLEEP,                                                             None),
 ]
 
 _SUCCESS = {'joint:complete'}
@@ -118,14 +185,14 @@ class Rx150JointSequence(Node):
         self.declare_parameter('move_timeout_sec', 20.0)
         # Let the fingers finish before the next arm move starts. The gripper
         # controller commands and returns -- it does not report completion.
-        self.declare_parameter('gripper_settle_sec', 1.5)
+        self.declare_parameter('gripper_settle_sec', 0.8)
         # Pause between steps. This is settling time, not padding: the
         # waypoint executor reports arrival on joint POSITION being within
         # tolerance, which happens while the arm is still decelerating and
         # ringing. Starting the next move at that instant stacks the new
         # command onto residual motion. Waiting lets each pose actually come to
         # rest, which also makes a misplaced pose obvious to watch.
-        self.declare_parameter('step_pause_sec', 5.0)
+        self.declare_parameter('step_pause_sec', 2.0)
         self.declare_parameter('loop', False)
 
         gp = self.get_parameter
@@ -210,7 +277,12 @@ class Rx150JointSequence(Node):
         self.get_logger().info("'%s' -> %s" % (label, self._status))
         return True
 
-    def _gripper(self, token: str) -> None:
+    def _gripper(self, token) -> None:
+        # std_msgs/String requires an actual str -- a bare number in SEQUENCE
+        # (e.g. 1.0 instead of '1.0') would otherwise crash this node with an
+        # AssertionError mid-mission, taking the whole launch down with it
+        # while the arm may still be holding the cup.
+        token = str(token)
         self.get_logger().info("gripper: '%s'" % token)
         self._gripper_pub.publish(String(data=token))
         self._spin(self._gripper_settle)
@@ -233,7 +305,8 @@ class Rx150JointSequence(Node):
         """
         cfg = DlsSolverConfig()
         lower, upper = cfg.joint_limits_lower, cfg.joint_limits_upper
-        for index, (label, joints, _) in enumerate(SEQUENCE, 1):
+        for index, entry in enumerate(SEQUENCE, 1):
+            label, joints = entry[0], entry[1]
             q = np.array(joints, dtype=float)
             for name, value, lo, hi in zip(rx150_kinematics.JOINT_NAMES, q, lower, upper):
                 if value < lo or value > hi:
@@ -268,7 +341,9 @@ class Rx150JointSequence(Node):
         self._check_sequence()
 
         while rclpy.ok():
-            for index, (label, joints, gripper_after) in enumerate(SEQUENCE, 1):
+            for index, entry in enumerate(SEQUENCE, 1):
+                label, joints, gripper_after = entry[0], entry[1], entry[2]
+                pause = entry[3] if len(entry) > 3 else self._step_pause
                 self.get_logger().info('=' * 60)
                 self.get_logger().info('[%d/%d] %s' % (index, len(SEQUENCE), label))
                 if not self._move_to(label, joints):
@@ -276,7 +351,7 @@ class Rx150JointSequence(Node):
                     return
                 if gripper_after:
                     self._gripper(gripper_after)
-                self._spin(self._step_pause)
+                self._spin(pause)
             self.get_logger().info('=' * 60)
             self.get_logger().info('Sequence complete.')
             if not self._loop:

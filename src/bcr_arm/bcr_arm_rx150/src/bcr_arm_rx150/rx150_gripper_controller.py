@@ -54,6 +54,7 @@ import math
 
 import rclpy
 from interbotix_xs_msgs.msg import JointSingleCommand
+from interbotix_xs_msgs.srv import Reboot
 from rclpy.node import Node
 from sensor_msgs.msg import JointState
 from std_msgs.msg import Float64, String
@@ -64,11 +65,12 @@ from trajectory_msgs.msg import JointTrajectory, JointTrajectoryPoint
 _SIM_FINGER_CLOSED = 0.015
 _SIM_FINGER_OPEN = 0.037
 
-# TODO
-#Physical gripper servo angle (radians). Placeholders for the gripper motor in
-# `position` operating mode -- verify/tune on the real arm before trusting them.
-_HW_SERVO_CLOSED = 0.6
-_HW_SERVO_OPEN = 1.7
+# Physical gripper servo angle (radians), for the gripper motor in `position`
+# operating mode. Both endpoints measured on the arm: torque off, fingers
+# moved by hand to the mechanical stop (together for CLOSED, spread apart for
+# OPEN), read /rx150/joint_states 'gripper'.
+_HW_SERVO_CLOSED = -0.80
+_HW_SERVO_OPEN = 1.519
 
 # Physical gripper PWM effort, for the motor in `pwm` operating mode -- which is
 # what interbotix_xsarm_control/config/modes.yaml actually sets:
@@ -105,7 +107,7 @@ _HW_SERVO_OPEN = 1.7
 # in /rx150/joint_states WHILE a command is applied to re-check either value --
 # not after, since a following command (or the effort easing) changes it back.
 _HW_PWM_CLOSED = -300.0
-_HW_PWM_OPEN = 800.0
+_HW_PWM_OPEN = 100.0
 
 _SENTINEL = float('nan')
 
@@ -135,6 +137,15 @@ class Rx150GripperController(Node):
         self.declare_parameter('position_max', _SENTINEL)
         self.declare_parameter('joint_state_topic', '/rx150/joint_states')
         self.declare_parameter('state_output_topic', '/rx150/gripper_state')
+        # A stalled close/open in `position` mode can trip the servo's own
+        # Hardware Error Status (overload/overheat). That fault is LATCHED ON
+        # THE PHYSICAL MOTOR -- restarting this node, the launch, or even the
+        # whole container does NOT clear it, only a reboot_motors call (or a
+        # power cycle) does. Left uncleared, the motor silently ignores every
+        # future command -- looks exactly like "the gripper does nothing" with
+        # no error anywhere in this node's own logs. Clear it once at startup.
+        self.declare_parameter('clear_fault_on_startup', True)
+        self.declare_parameter('reboot_service', '/rx150/reboot_motors')
 
         mode = str(self.get_parameter('command_mode').value).strip().lower()
         if mode not in {'single', 'trajectory'}:
@@ -238,6 +249,54 @@ class Rx150GripperController(Node):
                     self._position_min,
                     self._position_max,
                 )
+            )
+
+        # Deliberately last: this blocks on a service call (up to ~10s worst
+        # case). Every publisher/subscription above already exists by the
+        # time it runs, so a command that arrives while this is still
+        # rebooting gets queued and processed once spin resumes, instead of
+        # being published into a node that isn't listening yet -- which is
+        # exactly what happened when this ran first: rx150_joint_sequence's
+        # very first 'open' sometimes landed before this node had subscribed
+        # to /rx150/gripper_command at all, and was silently dropped.
+        if self._command_mode == 'single':
+            self._clear_startup_fault()
+
+    def _clear_startup_fault(self) -> None:
+        """Reboot the gripper motor if it's carrying a latched hardware fault.
+
+        smart_reboot=True makes this a no-op on a healthy motor -- it only
+        actually reboots (and re-torques) one that's currently in an error
+        state, so this is safe to run on every startup.
+        """
+        if not bool(self.get_parameter('clear_fault_on_startup').value):
+            return
+        service_name = str(self.get_parameter('reboot_service').value)
+        client = self.create_client(Reboot, service_name)
+        if not client.wait_for_service(timeout_sec=5.0):
+            self.get_logger().warning(
+                "'%s' not available -- skipping startup fault check. If the "
+                'gripper silently ignores commands later, reboot it manually.'
+                % service_name
+            )
+            return
+        request = Reboot.Request()
+        request.cmd_type = 'single'
+        request.name = str(self.get_parameter('single_joint_name').value)
+        request.enable = True
+        request.smart_reboot = True
+        future = client.call_async(request)
+        rclpy.spin_until_future_complete(self, future, timeout_sec=5.0)
+        if future.done() and future.exception() is None:
+            self.get_logger().info(
+                "Startup fault check on '%s': cleared/re-torqued if it was "
+                'faulted, left alone if it was already healthy.' % request.name
+            )
+        else:
+            self.get_logger().warning(
+                "Startup fault check on '%s' did not complete -- if the "
+                'gripper silently ignores commands later, reboot it manually.'
+                % request.name
             )
 
     def _feedback_joint(self) -> str:

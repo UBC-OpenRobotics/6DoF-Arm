@@ -7,7 +7,7 @@ Brings up only what a recorded playback needs:
     rx150_control.launch.py        the arm driver (xs_sdk) + robot_state_publisher
     rx150_joint_waypoint_executor  drives each pose, reports joint:complete
     rx150_dls_ik_executor          relays joint commands to the servos
-    rx150_gripper_controller       open/close, PWM effort (see modes.yaml)
+    rx150_gripper_controller       open/close, servo position (see modes.yaml)
     rx150_joint_sequence           the pose list itself
 
 The IK executor is here for its OTHER job. It solves Cartesian targets, which
@@ -51,11 +51,18 @@ def generate_launch_description():
         ),
         DeclareLaunchArgument('loop', default_value='false'),
         DeclareLaunchArgument(
-            'step_pause_sec', default_value='5.0',
+            'step_pause_sec', default_value='2.0',
             description='Settling pause after each pose. The waypoint executor '
                         'reports arrival on position tolerance, which is met '
                         'while the arm is still decelerating, so without this '
                         'the next move stacks onto residual motion.',
+        ),
+        DeclareLaunchArgument(
+            'gripper_settle_sec', default_value='0.8',
+            description='Pause after a gripper open/close before the next arm '
+                        'move. The gripper controller commands and returns -- '
+                        'it does not report completion -- so this is how long '
+                        'the fingers get to actually finish moving.',
         ),
         DeclareLaunchArgument(
             'waypoint_joint_tolerance', default_value='0.09',
@@ -126,8 +133,13 @@ def generate_launch_description():
             }],
         ),
 
-        # Same configuration as the full stack: the gripper servo runs in PWM
-        # mode, so cmd is an effort, not an angle.
+        # The gripper servo runs in position mode, so cmd is a servo angle in
+        # radians, not an effort. command_units is 'native' (not 'normalized'
+        # like the full stack) because rx150_joint_sequence.py's GRASP value
+        # is a specific absolute radian target measured on the real cup, not
+        # a fraction of open_position/closed_position -- normalized would
+        # make it drift if those two ever get retuned. 'open'/'close' tokens
+        # are unaffected by this either way.
         Node(
             package='bcr_arm_rx150',
             executable='rx150_gripper_controller',
@@ -135,8 +147,8 @@ def generate_launch_description():
             parameters=[{
                 'command_mode': 'single',
                 'command_topic': '/rx150/commands/joint_single',
-                'command_units': 'normalized',
-                'single_command_kind': 'pwm',
+                'command_units': 'native',
+                'single_command_kind': 'position',
             }],
         ),
 
@@ -151,6 +163,8 @@ def generate_launch_description():
                     LaunchConfiguration('loop'), value_type=bool),
                 'step_pause_sec': ParameterValue(
                     LaunchConfiguration('step_pause_sec'), value_type=float),
+                'gripper_settle_sec': ParameterValue(
+                    LaunchConfiguration('gripper_settle_sec'), value_type=float),
             }],
         ),
     ])

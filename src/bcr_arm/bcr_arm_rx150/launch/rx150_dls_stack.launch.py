@@ -182,11 +182,13 @@ def generate_launch_description():
                 'command_topic': '/rx150/commands/joint_single',
                 # 0.0 = closed, 1.0 = open -- same command works in sim.
                 'command_units': 'normalized',
-                # The gripper motor runs in PWM mode (see modes.yaml in
-                # interbotix_xsarm_control), so cmd is an effort, not an angle.
-                # Sending angles here is silently ignored by the servo, which
-                # looks exactly like a gripper that never opens or closes.
-                'single_command_kind': 'pwm',
+                # The gripper motor runs in position mode (see modes.yaml in
+                # interbotix_xsarm_control), so cmd is a servo angle in radians,
+                # not an effort. open_position/closed_position default to the
+                # measured endpoints (_HW_SERVO_OPEN/_HW_SERVO_CLOSED). No
+                # current limit is set, so closing on an object will stall the
+                # servo at full torque rather than backing off -- watch it.
+                'single_command_kind': 'position',
             }],
         ),
 
