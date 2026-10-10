@@ -1,13 +1,9 @@
 # BCR Arm
 
-Custom ROS 2 workspace for two related manipulation tracks:
-
-- the original Black Coffee Robotics 7-DOF arm in Gazebo
-- a 5-DOF RX-150 track for simulation and physical-arm experiments
-
-The main custom work in this repo is centered on damped least squares (DLS) inverse kinematics, Cartesian target testing, and higher-level task experimentation.
-
-**The RX-150 arm is the main, most built-out stack.** It is a full custom pipeline — DLS inverse kinematics, an obstacle-avoiding path planner, a joint-space RRT-Connect whole-body fallback, and sweep-based point-cloud mapping — that runs in both simulation and on the physical arm. For setup and running, use the RX-150 command references:
+ROS 2 workspace for the RX-150 manipulation track: a 5-DOF Interbotix RX-150, custom DLS
+inverse kinematics, an obstacle-avoiding path planner, a joint-space RRT-Connect whole-body
+fallback, and sweep-based point-cloud mapping — running in both simulation and on the
+physical arm.
 
 - **Simulation:** [bcr_arm_rx150/SIM_COMMANDS.md](bcr_arm_rx150/SIM_COMMANDS.md)
 - **Hardware:** [bcr_arm_rx150/HARDWARE_COMMANDS.md](bcr_arm_rx150/HARDWARE_COMMANDS.md)
@@ -41,59 +37,19 @@ docker exec -it rx150 bash -lc \
 Phase 1 is a ~2 minute sweep. See the mission doc for the launch flags worth tuning
 (`grasp_value`, `grasp_z_offset`, `autostart`, `use_vision_stub`).
 
-![Gazebo BCR Arm simulation](images/gz_img1.png)
-
-## What This Repo Focuses On
-
-This workspace is primarily used to:
-
-- launch the custom 7-DOF BCR arm in Gazebo
-- drive the BCR arm from Cartesian targets using a custom DLS solver
-- bring up the RX-150 in both simulation and hardware from within this workspace
-- run repeatable Cartesian target tests for both the BCR arm and RX-150
-- experiment with motion, perception, and task-level robotics workflows
-
-The repo also contains MoveIt, description, and Isaac-related assets, but this README focuses first on the setups most people will actually launch.
-
 ## Relevant Packages
 
-- `bcr_arm_description`: URDF, meshes, RViz configs, and robot description assets
-- `bcr_arm_gazebo`: Gazebo launch files, worlds, and custom control / IK scripts
-- `bcr_arm_moveit_config`: MoveIt configuration for the arm
-- `bcr_arm_rx150`: RX-150 launch files and safe hardware test utilities
+- `bcr_arm_rx150`: RX-150 launch files, the custom DLS/planner/RRT stack, and safe hardware test utilities
+- `bcr_arm_common`: shared RX-150 kinematics and collision model used by `bcr_arm_rx150` and `data_collector`
 - `data_collector`: custom ROS 2 Python nodes for joint-state and point-cloud capture
-- `bcr_arm`: metapackage for the stack
 - `interbotix`: vendored subset of the Interbotix RX-150 support stack used by the RX-150 sim, control, and MoveIt launches
 
 ## Available Setups
 
-This repo currently exposes three main robot setups:
+### RX-150 Gazebo
 
-### 1. BCR Arm Gazebo
-
-This is the original custom 7-DOF arm workflow. It uses the repo's Gazebo world, arm model, and original custom DLS IK solver in `bcr_arm_gazebo`.
-
-Use this when the goal is to:
-
-- work on the original BCR arm
-- test the 7-DOF custom solver in simulation
-- publish Cartesian targets and inspect the result in Gazebo
-
-Primary launch:
-
-```bash
-ros2 launch bcr_arm_gazebo bcr_arm.gazebo.launch.py
-```
-
-### 2. RX-150 Gazebo
-
-This is the newer 5-DOF RX-150 simulation workflow. It is exposed through `bcr_arm_rx150`, but the simulator itself is a thin wrapper around the upstream Interbotix RX-150 Gazebo Classic stack.
-
-Use this when the goal is to:
-
-- test RX-150-targeted workflows without hardware
-- compare custom motion behavior against the physical RX-150 track
-- keep all RX-150 launches local to `bcr_arm`
+The RX-150 simulation workflow is exposed through `bcr_arm_rx150`, a thin wrapper around
+the upstream Interbotix RX-150 Gazebo Classic stack.
 
 Primary launch (bare Gazebo bringup):
 
@@ -104,9 +60,11 @@ ros2 launch bcr_arm_rx150 rx150_gz_classic.launch.py
 **Full sim stack (obstacle planner + RRT-Connect fallback + sweep mapping + RViz viz) and all
 setup/run commands:** see **[bcr_arm_rx150/SIM_COMMANDS.md](bcr_arm_rx150/SIM_COMMANDS.md)**.
 
-### 3. RX-150 Hardware
+### RX-150 Hardware
 
-This is the physical 5-DOF RX-150 workflow. It uses this repo for both the project-level scripts and the vendored RX-150 support stack, including the low-level driver, descriptions, and launch infrastructure.
+This is the physical RX-150 workflow. It uses this repo for both the project-level scripts
+and the vendored RX-150 support stack, including the low-level driver, descriptions, and
+launch infrastructure.
 
 Use this when the goal is to:
 
@@ -132,7 +90,6 @@ Recommended environment:
 
 - Ubuntu 22.04
 - ROS 2 Humble
-- Gazebo Fortress for the BCR arm simulation
 - Gazebo Classic 11 for the RX-150 Gazebo simulation
 
 Install the base tools:
@@ -142,7 +99,6 @@ sudo apt update
 sudo apt install -y \
   ros-humble-desktop \
   gazebo \
-  gz-fortress \
   python3-colcon-common-extensions \
   python3-rosdep
 ```
@@ -339,177 +295,3 @@ visualization), launch `rx150_dls_sim_stack.launch.py` — see
 **[bcr_arm_rx150/SIM_COMMANDS.md](bcr_arm_rx150/SIM_COMMANDS.md)** for the full Docker command
 reference (build, launch, sweep, sending targets). The planner, RRT fallback, and executors
 are the same nodes that run on the physical arm (see the hardware workflow above).
-
-## BCR Arm 7-DOF Gazebo Workflow
-
-Open a separate terminal for each step below.
-
-TODO: Simplify by creating a single launch file.
-
-### Terminal 1: Launch Gazebo
-
-```bash
-# run from src/bcr_arm/ in your checkout
-source /opt/ros/humble/setup.bash
-source install/setup.bash
-ros2 launch bcr_arm_gazebo bcr_arm.gazebo.launch.py
-```
-
-### Terminal 2: Send the Setup Pose Once
-
-This sends the arm to the default `neutral_carry` pose, which is the recommended starting point for solver tests.
-
-```bash
-# run from src/bcr_arm/ in your checkout
-source /opt/ros/humble/setup.bash
-source install/setup.bash
-ros2 run bcr_arm_gazebo setup_arm_pose.py
-```
-
-Optional named poses:
-
-```bash
-ros2 run bcr_arm_gazebo setup_arm_pose.py --pose home
-ros2 run bcr_arm_gazebo setup_arm_pose.py --pose neutral_carry_yaw_left
-ros2 run bcr_arm_gazebo setup_arm_pose.py --pose neutral_carry_yaw_right
-```
-
-### Terminal 3: Visualize Cartesian Targets
-
-This node creates and moves a visible marker in Gazebo so the commanded target is easy to inspect.
-
-```bash
-# run from src/bcr_arm/ in your checkout
-source /opt/ros/humble/setup.bash
-source install/setup.bash
-ros2 run bcr_arm_gazebo cartesian_target_marker.py --ros-args -p marker_radius:=0.025
-```
-
-### Terminal 4: Start the Custom DLS IK Executor
-
-```bash
-# run from src/bcr_arm/ in your checkout
-source /opt/ros/humble/setup.bash
-source install/setup.bash
-ros2 run bcr_arm_gazebo dls_ik_executor.py
-```
-
-### Terminal 5: Publish Targets
-
-You can either publish a one-off Cartesian point:
-
-```bash
-# run from src/bcr_arm/ in your checkout
-source /opt/ros/humble/setup.bash
-source install/setup.bash
-ros2 topic pub --once /cartesian_target geometry_msgs/msg/PointStamped \
-'{header: {frame_id: world}, point: {x: -0.10, y: 0.40, z: 0.25}}'
-```
-
-Or run the repeatable target sequence:
-
-```bash
-source /opt/ros/humble/setup.bash
-source install/setup.bash
-ros2 run bcr_arm_gazebo cartesian_target_test_suite.py
-```
-
-## What Each Custom BCR Gazebo Node Does
-
-### `setup_arm_pose.py`
-
-Sends a one-shot joint trajectory to move the robot into a known setup pose before testing.
-
-### `dls_ik_executor.py`
-
-Our custom IK node:
-
-- subscribes to `/cartesian_target` as `geometry_msgs/msg/PointStamped`
-- subscribes to `/cartesian_target_pose` as `geometry_msgs/msg/PoseStamped`
-- reads the current state from `/joint_states`
-- solves IK numerically from the current joint configuration
-- publishes the solved command to `/joint_trajectory_controller/joint_trajectory`
-
-### `cartesian_target_marker.py`
-
-Creates and updates a red Gazebo marker at the active target position.
-
-### `cartesian_target_test_suite.py`
-
-Publishes a staged target sequence for repeatable solver testing and pauses between steps for manual inspection.
-
-## Solver Notes
-
-The custom solver in `dls_ik_executor.py` uses:
-
-- damped least squares updates
-- a forward kinematics and Jacobian model defined directly in the node
-- weighted position and orientation error terms
-- joint limit clipping
-- per-step joint and velocity limiting
-- optional retry behavior through the neutral carry pose
-
-Point targets and full pose targets are both supported.
-
-For point targets, the solver can be configured to:
-
-- keep the current end-effector orientation
-- lock to the neutral orientation
-- ignore orientation and solve position only
-
-## Useful Solver Parameters
-
-You can tune the solver at runtime with ROS parameters:
-
-```bash
-ros2 run bcr_arm_gazebo dls_ik_executor.py --ros-args \
-  -p damping_lambda:=0.08 \
-  -p goal_time_sec:=3.0 \
-  -p position_tolerance:=0.005 \
-  -p orientation_tolerance:=0.06 \
-  -p point_target_orientation_policy:=current
-```
-
-Common parameters:
-
-- `damping_lambda`
-- `goal_time_sec`
-- `position_tolerance`
-- `orientation_tolerance`
-- `step_scale`
-- `max_joint_step`
-- `max_joint_velocity`
-- `solver_max_iterations`
-- `point_target_orientation_policy` with `current`, `neutral`, or `none`
-- `orientation_mode` with `exact` or `upright_free_yaw`
-
-## Pose Target Example
-
-To send a full Cartesian pose target instead of only a point:
-
-```bash
-ros2 topic pub --once /cartesian_target_pose geometry_msgs/msg/PoseStamped \
-'{header: {frame_id: world}, pose: {position: {x: -0.10, y: 0.40, z: 0.25}, orientation: {x: 0.0, y: -0.70710678, z: 0.0, w: 0.70710678}}}'
-```
-
-You can also send a one-shot target directly through the solver process:
-
-```bash
-ros2 run bcr_arm_gazebo dls_ik_executor.py --x -0.10 --y 0.40 --z 0.25
-```
-
-Or with an explicit quaternion:
-
-```bash
-ros2 run bcr_arm_gazebo dls_ik_executor.py \
-  --x -0.10 --y 0.40 --z 0.25 \
-  --qx 0.0 --qy -0.70710678 --qz 0.0 --qw 0.70710678
-```
-
-## Useful Files
-
-- `bcr_arm_gazebo/scripts/dls_ik_executor.py`
-- `bcr_arm_gazebo/scripts/setup_arm_pose.py`
-- `bcr_arm_gazebo/scripts/cartesian_target_marker.py`
-- `bcr_arm_gazebo/scripts/cartesian_target_test_suite.py`
-- `bcr_arm_gazebo/launch/bcr_arm.gazebo.launch.py`
