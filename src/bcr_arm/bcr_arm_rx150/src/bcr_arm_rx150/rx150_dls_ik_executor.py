@@ -624,19 +624,13 @@ class Rx150DlsIkExecutor(Node):
         self._clear_target()
 
     def _drives_mission(self) -> bool:
-        """Whether the active target is one the mission is waiting on.
+        """Whether the active target is one that should report terminal status.
 
-        /motion/status is a SHARED channel and this node has two producers of
-        work on it. The orchestrator sends PointStamped; scene_sweep_mapper
-        sends PoseStamped for every station of the scan. Reporting on both
-        breaks the sweep outright: the orchestrator is blocked in
-        _wait_for_sweep, which accepts the next terminal token as the sweep's
-        own outcome, so a station move reporting path:complete aborts the
-        mission with "sweep did not complete" partway through the scan.
-
-        So the kind of target decides. Point targets are the mission's moves
-        and get reported; pose targets belong to the sweep and stay silent,
-        exactly as before this node reported anything at all.
+        /motion/status can have multiple producers watching it for a given
+        move. Point targets get reported; pose targets stay silent, exactly
+        as before this node reported anything at all -- this keeps a plain
+        point-target move (e.g. teleop) from being conflated with a
+        pose-targeted one driven by something else on the same channel.
         """
         return self._emit_motion_status and self._target_kind == 'point'
 

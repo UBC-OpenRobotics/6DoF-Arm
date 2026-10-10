@@ -17,19 +17,8 @@ setup(
             'launch/rx150_dls_stack.launch.py',
             'launch/rx150_moveit_interface.launch.py',
             'launch/rx150_joint_sequence.launch.py',
-            'launch/rx150_pick_place.launch.py',
-            'launch/rx150_pick_place_sim.launch.py',
-        ]),
-        ('share/' + package_name + '/urdf', [
-            'urdf/camera_mount_pose.xacro',                 # shared: the mount pose
-            'urdf/rx150_gripper_depth_camera.urdf.xacro',   # sim: Gazebo depth sensor
-            'urdf/rx150_realsense_camera.urdf.xacro',       # hardware: mounting link only
-        ]),
-        ('share/' + package_name + '/worlds', [
-            'worlds/rx150_obstacles.world',
         ]),
         ('share/' + package_name + '/rviz', [
-            'rviz/rx150_dls_sim_stack.rviz',   # sim: fixed frame `world` (Gazebo)
             'rviz/rx150_dls_stack.rviz',       # hardware: fixed frame rx150/base_link
         ]),
     ],
@@ -42,17 +31,11 @@ setup(
     tests_require=['pytest'],
     entry_points={
         'console_scripts': [
-            'mission_keyboard = bcr_arm_rx150.mission_keyboard:main',
             'rx150_dls_ik_executor = bcr_arm_rx150.rx150_dls_ik_executor:main',
             'rx150_gripper_controller = bcr_arm_rx150.rx150_gripper_controller:main',
             'rx150_joint_sequence = bcr_arm_rx150.rx150_joint_sequence:main',
             'rx150_joint_waypoint_executor = bcr_arm_rx150.rx150_joint_waypoint_executor:main',
             'rx150_named_pose = bcr_arm_rx150.rx150_named_pose:main',
-            'rx150_path_waypoint_executor = bcr_arm_rx150.rx150_path_waypoint_executor:main',
-            'rx150_pick_place_orchestrator = bcr_arm_rx150.rx150_pick_place_orchestrator:main',
-            'rx150_point_cloud_path_planner = bcr_arm_rx150.rx150_point_cloud_path_planner:main',
-            'sweep_placeholder = bcr_arm_rx150.sweep_placeholder:main',
-            'vision_placeholder = bcr_arm_rx150.vision_placeholder:main',
             'rx150_smoke_test = bcr_arm_rx150.rx150_smoke_test:main',
             'rx150_target_test_suite = bcr_arm_rx150.rx150_target_test_suite:main',
         ],

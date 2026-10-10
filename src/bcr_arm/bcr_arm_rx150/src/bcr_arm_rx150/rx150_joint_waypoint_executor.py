@@ -1,19 +1,14 @@
 #!/usr/bin/env python3
 """Step a planned joint-space path through the IK executor's direct joint channel.
 
-The RRT-Connect whole-body fallback produces a path in *joint* space (a list of
-configurations, each collision-checked as a whole-arm posture). That guarantee is
-only preserved if the path is executed as joint angles -- never re-solved through
-Cartesian IK, which could re-converge to a different, unchecked posture.
-
-This node is the joint-space analogue of ``rx150_path_waypoint_executor`` (which
-is Cartesian): it subscribes to a ``trajectory_msgs/JointTrajectory`` path, and
-commands each configuration one at a time on the IK executor's direct
-``/rx150/joint_command`` input (a ``sensor_msgs/JointState``), advancing when the
-measured joints from ``/rx150/joint_states`` are within a joint-space tolerance.
-Because the actual arm command is emitted by the IK executor's mode-aware
-publisher, this stepper is identical on sim (``trajectory``) and hardware
-(``group``) -- it never touches a controller topic directly.
+Drives ``rx150_joint_sequence``'s recorded-pose playback: it subscribes to a
+``trajectory_msgs/JointTrajectory`` path on ``/planned_joint_path``, and commands
+each configuration one at a time on the IK executor's direct ``/rx150/joint_command``
+input (a ``sensor_msgs/JointState``), advancing when the measured joints from
+``/rx150/joint_states`` are within a joint-space tolerance. Because the actual arm
+command is emitted by the IK executor's mode-aware publisher, this stepper is
+identical on sim (``trajectory``) and hardware (``group``) -- it never touches a
+controller topic directly.
 """
 
 from __future__ import annotations

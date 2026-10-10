@@ -21,9 +21,6 @@ setup(
     entry_points={
         'console_scripts': [
             'collector = data_collector.collector_script:main',
-            'point_cloud = data_collector.point_cloud:main',
-            'scene_point_cloud = data_collector.scene_point_cloud:main',
-            'scene_sweep_mapper = data_collector.scene_sweep_mapper:main',
         ],
     },
 )

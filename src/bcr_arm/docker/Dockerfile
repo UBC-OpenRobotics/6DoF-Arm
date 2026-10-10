@@ -50,37 +50,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 RUN rosdep init || true
 
-# --- Perception additions
-FROM base AS perception
-
-RUN apt-get update && apt-get install -y --no-install-recommends \
-    python3-vcstool \
-    git \
-    wget \
-    libgl1 \
-    libgomp1 \
-    ros-humble-cv-bridge \
-    ros-humble-image-transport \
-    ros-humble-message-filters \
-    ros-humble-tf2-ros \
-    ros-humble-tf2-geometry-msgs \
-    ros-humble-rmw-cyclonedds-cpp \
-    ros-humble-rqt \
-    ros-humble-rqt-common-plugins \
-    ros-humble-rviz2 \
-    ros-humble-realsense2-camera \
-    ros-humble-realsense2-description \
-    && rm -rf /var/lib/apt/lists/*
-
-RUN pip3 install --no-cache-dir \
-    ultralytics==8.4.67 \
-    opencv-python-headless \
-    open3d \
-    "numpy<2" \
-    setuptools==58.2.0
-
 # --- Final dev image
-FROM perception AS dev
+FROM base AS dev
 
 WORKDIR /workspaces/bcr_arm
 
