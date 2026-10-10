@@ -1,9 +1,2 @@
-Start the docker container in docker/ :
-
-"""
-docker compose build
-docker compose up
-"""
-
-to start a node immidiately after compose up, put the node as a command in docker-compose.yml
-
+The RX-150 teleoperation workspace lives in [`src/bcr_arm/`](src/bcr_arm/README.md) — see that
+README for setup, build, Docker, and simulation/hardware instructions.
