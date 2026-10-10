@@ -51,104 +51,105 @@ MoveIt) see the full command references:
 - `data_collector`: joint-state logging utility, useful for recording teleop sessions
 - `interbotix`: vendored subset of the Interbotix RX-150 support stack used by the RX-150 sim, control, and MoveIt launches
 
-## Prerequisites
+## Fresh Machine Setup
 
-Recommended environment:
+Two paths: **native Linux** or **Docker**. Both get you to the same `colcon build`.
 
-- Ubuntu 22.04
-- ROS 2 Humble
-- Gazebo Classic 11 for the RX-150 Gazebo simulation
+> **Use native Linux for end-to-end testing.** Teleop + haptics is a closed control loop —
+> operator input to arm motion, and back through force feedback — where timing jitter is felt
+> directly as lag or instability, not just a logged number. Docker here runs with
+> `network_mode: host` and `privileged: true` specifically to stay close to native performance,
+> and is fine for development and the sim workflow. But it's still an extra runtime layer
+> between the control loop and the hardware (container scheduling, cgroups, device
+> passthrough), and on anything other than a Linux host (Docker Desktop on macOS/Windows) that
+> gap gets much bigger. For latency-sensitive end-to-end testing on the physical arm, run
+> native on Linux.
 
-Install the base tools:
+### Native Linux
+
+Recommended environment: Ubuntu 22.04, ROS 2 Humble, Gazebo Classic 11.
 
 ```bash
+# 1. ROS 2 + Gazebo Classic + build tools
 sudo apt update
 sudo apt install -y \
   ros-humble-desktop \
   gazebo \
   python3-colcon-common-extensions \
   python3-rosdep
-```
 
-If `rosdep` has not been initialized yet:
-
-```bash
+# 2. rosdep, if not already initialized
 sudo rosdep init
 rosdep update
-```
 
-## Build
-
-These commands assume this repository itself is the colcon workspace root.
-
-```bash
-# run from src/bcr_arm/ in your checkout
+# 3. Clone and build (src/bcr_arm is the colcon workspace root)
+git clone https://github.com/UBC-OpenRobotics/6DoF-Arm.git
+cd 6DoF-Arm/src/bcr_arm
 source /opt/ros/humble/setup.bash
 rosdep install --from-paths . --ignore-src -r -y
 colcon build --symlink-install
 source install/setup.bash
 ```
 
-The vendored `interbotix` subtree is included so the RX-150 workflows can build from a fresh clone without requiring a separate `~/interbotix_ws`.
+The vendored `interbotix` subtree is included so the RX-150 workflows build from a fresh clone
+without requiring a separate `~/interbotix_ws`.
 
-## Docker Support
-
-This repo includes a workspace-level Docker setup for the RX-150 simulation and hardware workflows:
-
-- `workspace`: interactive development shell
-- `rx150-sim`: RX-150 Gazebo sim plus the custom DLS solver
-- `rx150-hardware`: physical RX-150 plus the custom DLS solver
-
-Support expectations:
-
-- Ubuntu/Linux host: supported for development, RX-150 sim, and RX-150 hardware
-- macOS/Windows host: useful for development and limited containerized workflows, but not recommended as the primary path for physical robot access
-
-Important note:
-
-- The Docker setup makes the repo environment reproducible.
-- Physical RX-150 use still depends on the host exposing the USB/serial devices correctly.
-- The `rx150-hardware` Docker service is intended for Linux hosts.
-
-Build the image:
+**Physical arm only — U2D2/Dynamixel udev rule (one-time, on the host):**
 
 ```bash
+sudo cp interbotix/interbotix_ros_core/interbotix_ros_xseries/interbotix_xs_sdk/99-interbotix-udev.rules \
+  /etc/udev/rules.d/
+sudo udevadm control --reload-rules && sudo udevadm trigger
+sudo usermod -aG dialout "$USER"   # log out/in (or reboot) for the group change to apply
+```
+
+This rule also sets the U2D2's USB latency timer to 1 ms (vs. the Linux default 16 ms) — it's
+part of why servo communication is fast and consistent on native Linux. Without it the
+Dynamixel bus still works, just slower and jerkier.
+
+Then run the [Quick Start](#quick-start) commands above.
+
+### Docker
+
+Install Docker Engine + the Compose plugin on an Ubuntu/Linux host (this is the supported
+path — macOS/Windows via Docker Desktop works for development but is not recommended for
+physical-robot use).
+
+```bash
+# 1. let containers open your X display (for RViz/Gazebo GUIs)
+xhost +local:docker
+
+# 2. build the image
 # run from src/bcr_arm/ in your checkout
 docker compose build
 ```
 
-Open an interactive development shell:
+**Physical arm only — the U2D2/Dynamixel udev rule still goes on the *host*, not in the
+container.** `rx150-hardware` mounts `/run/udev` read-only and `/dev` directly — it reads
+whatever the host kernel already set up, so do the same one-time step as the native guide
+above, on the host, before launching the hardware service.
 
 ```bash
+# Development shell
 docker compose run --rm workspace
-```
 
-Launch the RX-150 sim stack in Docker:
-
-```bash
+# Sim stack
 xhost +local:docker
 docker compose run --rm --service-ports rx150-sim
-```
 
-Launch the RX-150 hardware stack in Docker on Linux:
-
-```bash
+# Hardware stack (Linux host only)
 xhost +local:docker
 docker compose run --rm --service-ports rx150-hardware
 ```
 
-The helper script `bcr-setup-workspace` inside the container runs:
+The helper script `bcr-setup-workspace` inside the container runs `rosdep install` and
+`colcon build --packages-up-to bcr_arm_rx150` before each launch, so the services build the
+RX-150 path automatically — no separate build step needed inside the container.
 
-- `rosdep install --from-paths . --ignore-src -r -y`
-- `colcon build --packages-up-to bcr_arm_rx150 --symlink-install`
+### Optional External Underlay
 
-This means the Docker launch services build the RX-150 path before starting the requested stack.
-
-## Optional External Underlay
-
-If an existing Interbotix workspace is already available, it can still be sourced as an underlay. This is optional for the RX-150 path in this repo, not required.
-
-Typical setup:
+If an existing Interbotix workspace is already available, it can be sourced as an underlay
+instead of (or alongside) the vendored `interbotix` subtree — optional, not required:
 
 ```bash
 source /opt/ros/humble/setup.bash
@@ -158,9 +159,9 @@ colcon build --symlink-install
 source install/setup.bash
 ```
 
-When both are present, the local vendored packages in this repo are intended to be the project-facing source of truth.
-
-For RX-150 Gazebo Classic simulation, it is also helpful to source Gazebo Classic's setup file:
+When both are present, the local vendored packages in this repo are the project-facing source
+of truth. For RX-150 Gazebo Classic simulation, it also helps to source Gazebo Classic's setup
+file:
 
 ```bash
 source /usr/share/gazebo-11/setup.sh
