@@ -299,12 +299,12 @@ class Rx150DlsIkExecutor(Node):
     def _joint_command_callback(self, msg: JointState) -> None:
         """Command a pre-computed joint configuration directly, bypassing IK.
 
-        Used by the RRT-Connect whole-body fallback: the config is already
-        collision-checked in joint space, so re-solving it through Cartesian IK
-        (which could land in a different, unchecked posture) is exactly what we
-        must not do. The config is published through the same mode-aware channel
-        (`group`/`trajectory`) the solved targets use, so it is portable to the
-        physical arm unchanged.
+        For a caller that already has a target joint configuration (e.g.
+        rx150_joint_sequence's recorded-pose playback) and wants it driven
+        exactly as given, not re-solved through Cartesian IK. The config is
+        published through the same mode-aware channel (`group`/`trajectory`)
+        the solved targets use, so it is portable to the physical arm
+        unchanged.
         """
         positions = dict(zip(msg.name, msg.position))
         base = self._current_q if self._current_q is not None else np.zeros(
